@@ -54,6 +54,7 @@ type
     clientSocket: SocketHandle
     clientId: uint64
     responded: bool
+    responseHeaders*: HttpHeaders
 
   Request* = ptr RequestObj
 
@@ -313,6 +314,10 @@ proc respond*(
     headers["Connection"] = "close"
   elif request.httpVersion == Http10:
     headers["Connection"] = "keep-alive"
+
+  for (k, v) in request.responseHeaders:
+    if k notin headers:
+      headers[k] = v
 
   if body.len > 860 and "Content-Encoding" notin headers:
     # Compression would go here if zippy was available

@@ -1,4 +1,6 @@
-import ../hunos, std/tables, std/times, std/strutils
+import ../hunos, std/atomics, std/tables, std/times, std/strutils
+
+var requestIdCounter*: Atomic[uint64]
 
 type
   MiddlewareProc* = proc(request: Request, next: proc()) {.gcsafe.}
@@ -41,10 +43,10 @@ proc corsMiddleware*(
   maxAge: string = "86400"
 ): MiddlewareProc =
   return proc(request: Request, next: proc()) {.gcsafe.} =
-    request.headers["Access-Control-Allow-Origin"] = allowOrigin
-    request.headers["Access-Control-Allow-Methods"] = allowMethods
-    request.headers["Access-Control-Allow-Headers"] = allowHeaders
-    request.headers["Access-Control-Max-Age"] = maxAge
+    request.responseHeaders["Access-Control-Allow-Origin"] = allowOrigin
+    request.responseHeaders["Access-Control-Allow-Methods"] = allowMethods
+    request.responseHeaders["Access-Control-Allow-Headers"] = allowHeaders
+    request.responseHeaders["Access-Control-Max-Age"] = maxAge
 
     if request.httpMethod == "OPTIONS":
       request.respond(204)
@@ -71,7 +73,8 @@ proc requestIdMiddleware*: MiddlewareProc =
   return proc(request: Request, next: proc()) {.gcsafe.} =
     let existingId = request.headers["X-Request-Id"]
     if existingId == "":
-      request.headers["X-Request-Id"] = $cast[uint64](request)
+      let id = requestIdCounter.fetchAdd(1)
+      request.headers["X-Request-Id"] = $id
     next()
 
 proc recoveryMiddleware*(

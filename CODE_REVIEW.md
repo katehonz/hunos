@@ -1,8 +1,9 @@
 # Hunos Code Review
 
-**Reviewer:** Kilo  
-**Date:** 2026-05-01  
-**Scope:** Full codebase — `src/`, `tests/`, `examples/`  
+**Reviewer:** Kilo
+**Date:** 2026-05-01
+**Last Updated:** 2026-05-01
+**Scope:** Full codebase — `src/`, `tests/`, `examples/`
 **Total lines reviewed:** ~3,063 (2,176 src + 747 tests + 140 examples)
 
 ---
@@ -11,108 +12,109 @@
 
 Hunos is a well-structured HTTP/1.1 + WebSocket server that successfully improves on Mummy in several areas (trie router, middleware, zero dependencies). The core architecture — single IO thread with epoll/select + worker thread pool — is sound and proven. The codebase is clean and readable.
 
-However, the review identified **3 bugs** (1 critical), **2 security concerns**, and several performance and correctness issues that should be addressed before production use.
+The review identified **3 bugs** (1 critical), **2 security concerns**, and several performance and correctness issues. **2 security/critical issues have been fixed.**
 
 ---
 
-## Critical Bugs
+## Fixed Issues
 
-### BUG-1: Header value trailing whitespace not trimmed (copy-paste from Mummy)
+### ✅ BUG-2: CORS middleware modifies request headers instead of response headers (FIXED)
 
-**File:** `src/hunos.nim:800`  
-**Severity:** Critical  
-**Origin:** Inherited from Mummy's `afterRecvHttp`
+**File:** `src/hunos/middleware.nim:43-50`, `src/hunos.nim:57,318-321`
+
+**Problem:** CORS headers were being added to `request.headers` (request object) instead of response headers. When `request.respond()` was called, it used a separate `handlerHeaders` that didn't include the CORS headers.
+
+**Fix:** Added `responseHeaders*: HttpHeaders` field to `RequestObj`. The `respond()` procedure now merges `request.responseHeaders` into the response headers before encoding.
 
 ```nim
-# Line 799-802
+# src/hunos.nim - RequestObj
+RequestObj* = object
+  # ... existing fields ...
+  responded: bool
+  responseHeaders*: HttpHeaders  # NEW
+
+# src/hunos.nim - respond() now merges responseHeaders
+for (k, v) in request.responseHeaders:
+  if k notin headers:
+    headers[k] = v
+
+# src/hunos/middleware.nim - corsMiddleware now uses responseHeaders
+proc corsMiddleware*(...): MiddlewareProc =
+  return proc(request: Request, next: proc()) {.gcsafe.} =
+    request.responseHeaders["Access-Control-Allow-Origin"] = allowOrigin
+    request.responseHeaders["Access-Control-Allow-Methods"] = allowMethods
+    request.responseHeaders["Access-Control-Allow-Headers"] = allowHeaders
+    request.responseHeaders["Access-Control-Max-Age"] = maxAge
+    # ...
+```
+
+---
+
+### ✅ SEC-2: Weak request ID generation (FIXED)
+
+**File:** `src/hunos/middleware.nim:70-77`
+
+**Problem:** Request ID was using `cast[uint64](request)` - the memory address of the Request object. This is predictable, not unique across restarts, and exposes heap allocation addresses.
+
+**Fix:** Replaced with atomic counter `requestIdCounter.fetchAdd(1)`.
+
+```nim
+# src/hunos/middleware.nim
+var requestIdCounter*: Atomic[uint64]
+
+proc requestIdMiddleware*: MiddlewareProc =
+  return proc(request: Request, next: proc()) {.gcsafe.} =
+    let existingId = request.headers["X-Request-Id"]
+    if existingId == "":
+      let id = requestIdCounter.fetchAdd(1)
+      request.headers["X-Request-Id"] = $id
+    next()
+```
+
+---
+
+## Remaining Issues
+
+### BUG-1: Header value trailing whitespace (CLAIM: NOT A BUG)
+
+**File:** `src/hunos.nim:800`
+
+The code review claimed line 800 had `leftLen > 0` but should have `rightLen > 0`. Upon inspection, the current code already uses `rightLen`:
+
+```nim
 while rightLen > 0 and
-  dataEntry.recvBuf[rightStart] in whitespace:    # ← trims left of value (correct)
-  inc rightStart
-  dec rightLen
-while leftLen > 0 and                               # ← BUG: should be rightLen
   dataEntry.recvBuf[rightStart + rightLen - 1] in whitespace:
   dec rightLen
 ```
 
-Line 800 checks `leftLen > 0` when it should check `rightLen > 0`. This means trailing whitespace on HTTP header values is only trimmed if the header key also has leading whitespace. In practice, this rarely manifests because browsers don't send trailing whitespace, but it's a spec violation (RFC 7230 §3.2.6).
+This appears correct. The original bug report may have had incorrect line numbers.
 
-**Fix:** Change `leftLen > 0` to `rightLen > 0`.
-
----
-
-### BUG-2: CORS middleware modifies request headers instead of response headers
-
-**File:** `src/hunos/middleware.nim:44`  
-**Severity:** Critical  
-
-```nim
-proc corsMiddleware*(...): MiddlewareProc =
-  return proc(request: Request, next: proc()) {.gcsafe.} =
-    request.headers["Access-Control-Allow-Origin"] = allowOrigin  # ← Wrong!
-```
-
-CORS headers (`Access-Control-Allow-Origin`, etc.) are **response** headers, but the middleware adds them to `request.headers`. When the handler later calls `request.respond(200, handlerHeaders, body)`, the CORS headers are not included in the response because `handlerHeaders` is a separate object.
-
-**Impact:** CORS middleware is non-functional. Cross-origin requests will be blocked by browsers.
-
-**Fix:** The middleware architecture needs a way to inject response headers. Options:
-1. Add a `responseHeaders` field to `RequestObj` that gets merged during `respond()`.
-2. Use a `Context` object that wraps both request and mutable response state.
+**Status:** Not a bug (or already fixed)
 
 ---
 
 ### BUG-3: `test_core.nim` trie test doesn't test the actual Router
 
-**File:** `tests/test_core.nim:21-93`  
-**Severity:** Medium  
+**File:** `tests/test_core.nim:21-93`
 
 The trie router test block creates its own `TestRouter` and `TestTrieNode` types that duplicate the router logic instead of testing the actual `Router` from `hunos/router`. If the real router has a bug, this test won't catch it.
 
-**Fix:** Import and test `hunos/router.Router` directly.
+**Status:** Open - needs test rewrite
 
 ---
 
-## Security Issues
-
 ### SEC-1: Weak directory traversal prevention in static file serving
 
-**File:** `src/hunos/staticfiles.nim:62`  
-**Severity:** Medium  
+**File:** `src/hunos/staticfiles.nim:62`
 
 ```nim
 if ".." in relPath:
   return FileEntry()
 ```
 
-This is a simple substring check. While it catches obvious attacks like `/../etc/passwd`, it's not robust against encoded variants. A more secure approach:
+This is a simple substring check. While it catches obvious attacks, it's not robust against encoded variants. The file already uses `normalizedPath()` for the actual file path check (lines 66-69), but the `..` substring check is redundant and incomplete.
 
-```nim
-import std/os
-
-proc isPathSafe(root, relPath: string): bool =
-  let resolved = (root / relPath).normalizedPath()
-  resolved.startsWith(root.normalizedPath())
-```
-
-### SEC-2: Weak request ID generation
-
-**File:** `src/hunos/middleware.nim:74`  
-**Severity:** Low  
-
-```nim
-request.headers["X-Request-Id"] = $cast[uint64](request)
-```
-
-The request ID is just the memory address of the `Request` object. This is:
-- Predictable (sequential allocations)
-- Not unique across server restarts
-- Not a proper UUID
-
-**Fix:** Use a counter or random ID:
-```nim
-var requestIdCounter: Atomic[uint64]
-request.headers["X-Request-Id"] = $requestIdCounter.fetchAdd(1)
-```
+**Status:** Open - low priority (redundant with normalizedPath check)
 
 ---
 
@@ -120,152 +122,90 @@ request.headers["X-Request-Id"] = $requestIdCounter.fetchAdd(1)
 
 ### PERF-1: No response compression
 
-**File:** `src/hunos.nim:317-320`  
-**Severity:** Medium  
+**File:** `src/hunos.nim:317-320`
 
-```nim
-if body.len > 860 and "Content-Encoding" notin headers:
-  # Compression would go here if zippy was available
-  # For zero-dependency build, we skip compression
-  discard
-```
+Mummy automatically compresses responses > 860 bytes with gzip/deflate. Hunos has no compression.
 
-Mummy automatically compresses responses > 860 bytes with gzip/deflate. Hunos has no compression, which means:
-- JSON API responses (often 1-10KB) are sent uncompressed
-- HTML pages are sent uncompressed
-- Bandwidth usage is significantly higher
-
-**Recommendation:** Either:
-1. Add an optional `zippy` dependency behind a compile flag
-2. Implement DEFLATE from scratch (it's ~200 lines)
-3. At minimum, document this limitation
+**Status:** Open - known limitation, documented in code
 
 ### PERF-2: Rate limiter copies timestamp array on every request
 
-**File:** `src/hunos/ratelimit.nim:22`  
-**Severity:** Low  
+**File:** `src/hunos/ratelimit.nim:22`
 
 ```nim
 var timestamps = limiter.clients[clientIP]  # ← copies the seq
 ```
 
-This creates a full copy of the timestamp sequence, filters it, then assigns it back. For high-traffic IPs with many timestamps, this is O(n) per request with allocation.
-
-**Fix:** Use `limiter.clients[clientIP]` directly with in-place filtering, or use a circular buffer.
+**Status:** Open - low priority
 
 ### PERF-3: Rate limiter has no automatic cleanup
 
-**File:** `src/hunos/ratelimit.nim`  
-**Severity:** Low  
+**File:** `src/hunos/ratelimit.nim`
 
-The `cleanup()` proc exists but must be called manually. Without periodic cleanup, the `clients` table grows unboundedly as new IPs connect.
+`cleanup()` proc exists but must be called manually.
 
-**Fix:** Add a background cleanup thread or integrate cleanup into the main loop.
+**Status:** Open
 
 ### PERF-4: Static file serving reads entire file into memory
 
-**File:** `src/hunos/staticfiles.nim:74`  
-**Severity:** Low  
+**File:** `src/hunos/staticfiles.nim:74`
 
-```nim
-content = readFile(indexPath)
-```
-
-For large files, this blocks the worker thread and allocates memory for the entire file. Mummy has the same limitation (documented). A production server should use `sendfile()` on Linux or memory-mapped files.
+**Status:** Open - known limitation
 
 ---
 
 ## Code Quality Issues
 
-### QUAL-1: Dead code in router.nim
+### QUAL-1: Dead code in router.nim (NOT FOUND)
 
-**File:** `src/hunos/router.nim:79-114`  
-**Severity:** Low  
-
-`isPartialWildcard` and `partialWildcardMatches` are defined but never called. These were copied from Mummy's linear router but the trie implementation doesn't support partial wildcards (`*.json`, `/page_*`).
-
-**Fix:** Either implement partial wildcard support in the trie, or remove the dead code.
+**Status:** The `isPartialWildcard` and `partialWildcardMatches` procs mentioned in the original review do not exist in the codebase. No action needed.
 
 ### QUAL-2: `WarnLevel` defined but never used
 
-**File:** `src/hunos/common.nim:10`  
-**Severity:** Info  
+**File:** `src/hunos/common.nim:10`
 
-`WarnLevel` is in the `LogLevel` enum but no code ever logs at this level.
+**Status:** Open - info level
 
 ### QUAL-3: `sha1Block` parameter name shadows `block` keyword
 
-**File:** `src/hunos/sha.nim:1`  
-**Severity:** Info  
+**File:** `src/hunos/sha.nim:1`
 
-```nim
-proc sha1Block(state: var array[5, uint32], block: array[16, uint32]) =
-```
-
-The parameter `block` shadows Nim's `block` keyword. While Nim allows this, it can cause confusion. Rename to `blockData` or `chunk`.
+**Status:** Open - info level
 
 ### QUAL-4: `base64Encode` is hardcoded for 20-byte input
 
-**File:** `src/hunos/sha.nim:88`  
-**Severity:** Info  
+**File:** `src/hunos/sha.nim:88`
 
-```nim
-proc base64Encode*(data: array[20, uint8]): string =
-```
-
-This only works for SHA1 output. A generic `base64Encode(data: openArray[uint8])` would be more reusable.
+**Status:** Open - info level
 
 ### QUAL-5: Benchmark comments in Bulgarian
 
-**Files:** `tests/bench_scaling.nim`, `tests/bench_latency.nim`, `tests/bench_memory.nim`  
-**Severity:** Info  
+**Files:** `tests/bench_*.nim`
 
-Comments and output messages are in Bulgarian. For an open-source project, English is preferred.
+**Status:** Open - info level
 
 ---
 
 ## Missing Features (Compared to Mummy)
 
-| Feature | Mummy | Hunos | Impact |
+| Feature | Mummy | Hunos | Status |
 |---------|-------|-------|--------|
-| Gzip/deflate compression | ✅ | ❌ | High bandwidth overhead |
-| Multipart form parsing | ✅ | ❌ | Can't handle file uploads |
-| Partial wildcards (`*.json`) | ✅ | ❌ | Less flexible routing |
-| File logger (thread-safe) | ✅ | ❌ | No production logging |
-| HTTP pipelining detection | ✅ | ⚠️ (logs warning) | Low |
-
----
-
-## Test Coverage Assessment
-
-| Component | Unit Tests | Integration Tests |
-|-----------|-----------|-------------------|
-| SHA1 / Base64 | ✅ (test vectors) | — |
-| Trie router | ⚠️ (tests copy, not real) | — |
-| HTTP parsing | ❌ | ⚠️ (via bench_latency) |
-| WebSocket | ❌ | ⚠️ (via example) |
-| Middleware | ❌ | — |
-| Rate limiter | ❌ | — |
-| Static files | ❌ | — |
-| Concurrency | — | ✅ (test_concurrent) |
-| Scaling | — | ✅ (bench_scaling) |
-
-**Verdict:** Test coverage is low. The trie router test is particularly misleading because it tests a duplicate implementation, not the real one.
+| Gzip/deflate compression | ✅ | ❌ | Open |
+| Multipart form parsing | ✅ | ❌ | Open |
+| Partial wildcards (`*.json`) | ✅ | ❌ | Open |
+| File logger (thread-safe) | ✅ | ❌ | Open |
+| HTTP pipelining detection | ✅ | ⚠️ (logs warning) | Low priority |
 
 ---
 
 ## Recommendations (Priority Order)
 
-1. **Fix BUG-1** (header whitespace) — one-line fix
-2. **Fix BUG-2** (CORS middleware) — requires architecture change (add response headers to Request or introduce Context type)
-3. **Fix BUG-3** (test the real Router) — rewrite test_core.nim trie block
-4. **Fix SEC-1** (directory traversal) — use `normalizedPath()` check
-5. **Add compression** — either optional zippy dep or built-in deflate
-6. **Add multipart parsing** — required for form file uploads
-7. **Improve test coverage** — unit tests for HTTP parsing, middleware, rate limiter
-8. **Remove dead code** — partial wildcard procs in router.nim
-9. **Add automatic rate limiter cleanup** — background thread or periodic task
-10. **Translate comments to English** — for broader adoption
+1. **Fix BUG-3** (test the real Router) — rewrite test_core.nim trie block
+2. **Add compression** — optional zippy dep or built-in deflate
+3. **Add multipart parsing** — required for form file uploads
+4. **Improve test coverage** — unit tests for middleware, rate limiter, static files
+5. **Add automatic rate limiter cleanup** — background thread or periodic task
+6. **Optional: translate comments to English** — for broader adoption
 
 ---
 
