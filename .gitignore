@@ -1,0 +1,46 @@
+# Nim
+nimcache/
+nimblecache/
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+
+# Binaries
+bin/
+*.bin
+
+# Build artifacts
+build/
+dist/
+
+# Nimble
+*.nimble.lock
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.db
+
+# Logs
+*.log
+
+# Test / Benchmark artifacts
+tests/nil_repro/
