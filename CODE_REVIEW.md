@@ -188,13 +188,22 @@ var timestamps = limiter.clients[clientIP]  # ← copies the seq
 
 ## Missing Features (Compared to Mummy)
 
-| Feature | Mummy | Hunos | Status |
-|---------|-------|-------|--------|
-| Gzip/deflate compression | ✅ | ❌ | Open |
-| Multipart form parsing | ✅ | ❌ | Open |
-| Partial wildcards (`*.json`) | ✅ | ❌ | Open |
-| File logger (thread-safe) | ✅ | ❌ | Open |
-| HTTP pipelining detection | ✅ | ⚠️ (logs warning) | Low priority |
+| Feature | Mummy | Hunos | Status | Notes |
+|---------|-------|-------|--------|-------|
+| Gzip/deflate compression | ✅ | ❌ | Open | Mummy auto-compresses responses > 860 bytes via `zippy`. Hunos has placeholder comment (`src/hunos.nim:317-320`) but no implementation. |
+| Multipart form parsing | ✅ | ❌ | Open | Mummy has `mummy/multipart.nim` with `decodeMultipart()`. Hunos has no equivalent. |
+| Partial wildcards (`*.json`) | ✅ | ❌ | Open | Mummy router supports `*`, `/*`, `/page_*`, `/*_something_*`. Hunos only supports `@param` and `**`. |
+| Named path parameters | ✅ | ✅ | — | Both support `@id` style params. Hunos uses trie, Mummy uses linear scan. |
+| HTTP pipelining detection | ✅ | ✅ | — | Both log a debug warning when data arrives before previous response is sent. Identical behavior. |
+| File logger | ❌ | ❌ | — | Neither has a built-in file logger. Both only expose a `LogHandler` callback. Can be added externally. |
+
+### Details
+
+**Compression:** Adding gzip/deflate would require either adding `zippy` as an optional dependency or implementing deflate internally. The placeholder in `respond()` is ready for integration.
+
+**Multipart:** Mummy's `decodeMultipart()` returns `seq[MultipartEntry]` with lazy `(start, last)` slices into the request body. A Hunos equivalent could live in `hunos/multipart.nim` and avoid copying large uploads.
+
+**Router wildcards:** Mummy's `*` wildcard matches 0+ characters excluding `/`. Valid patterns: `/api/*.json`, `/page_*`, `/*_something_*`. Hunos router only has exact segment matches, `@param` (single segment), and `**` (multi-segment). Adding `*` would require updating `addRoute()` and `matchNode()` in `router.nim`.
 
 ---
 
