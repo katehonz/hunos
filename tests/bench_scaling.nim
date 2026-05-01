@@ -15,7 +15,7 @@
 ##   done
 
 import hunos, std/os, std/times, std/strutils, std/atomics, std/httpclient
-import ../tests/wrk_shared
+import ./wrk_shared
 
 const
   benchDuration = 5.0
@@ -75,7 +75,7 @@ proc runBenchmark(port: int, numWorkers: int): int64 =
             totalRequests.fetchAdd(1)
           else:
             totalErrors.fetchAdd(1)
-        except:
+        except Exception:
           totalErrors.fetchAdd(1)
       client.close()
     )

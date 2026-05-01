@@ -1,7 +1,7 @@
-import hunos, hunos/router, hunos/sha
+import hunos, hunos/router, hunos/sha, hunos/common
 
 block: # Test trie router with actual Router type
-  var router: Router
+  var router = newRouter()
 
   proc handler1(request: Request) =
     var headers: HttpHeaders
@@ -86,8 +86,6 @@ block: # Test HttpHeaders
   echo "All HttpHeaders tests passed!"
 
 block: # Test PathParams
-  import hunos/common
-
   var params: PathParams
   params.add(("id", "123"))
   params.add(("name", "test"))

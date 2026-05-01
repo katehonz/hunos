@@ -1,9 +1,9 @@
-import ../hunos, std/atomics, std/tables, std/times, std/strutils
+import ../hunos, std/atomics, std/times
 
 var requestIdCounter*: Atomic[uint64]
 
 type
-  MiddlewareProc* = proc(request: Request, next: proc()) {.gcsafe.}
+  MiddlewareProc* = proc(request: Request, next: proc() {.gcsafe.}) {.gcsafe.}
 
   MiddlewareStack* = object
     middlewares: seq[MiddlewareProc]
@@ -42,7 +42,7 @@ proc corsMiddleware*(
   allowHeaders: string = "Content-Type, Authorization",
   maxAge: string = "86400"
 ): MiddlewareProc =
-  return proc(request: Request, next: proc()) {.gcsafe.} =
+  return proc(request: Request, next: proc() {.gcsafe.}) {.gcsafe.} =
     request.responseHeaders["Access-Control-Allow-Origin"] = allowOrigin
     request.responseHeaders["Access-Control-Allow-Methods"] = allowMethods
     request.responseHeaders["Access-Control-Allow-Headers"] = allowHeaders
@@ -57,7 +57,7 @@ proc corsMiddleware*(
 proc loggingMiddleware*(
   logHandler: proc(msg: string) {.gcsafe.} = nil
 ): MiddlewareProc =
-  return proc(request: Request, next: proc()) {.gcsafe.} =
+  return proc(request: Request, next: proc() {.gcsafe.}) {.gcsafe.} =
     let startTime = epochTime()
 
     next()
@@ -68,19 +68,25 @@ proc loggingMiddleware*(
 
     if logHandler != nil:
       logHandler(msg)
+    else:
+      request.log(InfoLevel, msg)
 
 proc requestIdMiddleware*: MiddlewareProc =
-  return proc(request: Request, next: proc()) {.gcsafe.} =
+  return proc(request: Request, next: proc() {.gcsafe.}) {.gcsafe.} =
     let existingId = request.headers["X-Request-Id"]
-    if existingId == "":
+    if existingId != "":
+      request.responseHeaders["X-Request-Id"] = existingId
+    else:
       let id = requestIdCounter.fetchAdd(1)
-      request.headers["X-Request-Id"] = $id
+      let idStr = $id
+      request.headers["X-Request-Id"] = idStr
+      request.responseHeaders["X-Request-Id"] = idStr
     next()
 
 proc recoveryMiddleware*(
   errorHandler: proc(request: Request, e: ref Exception) {.gcsafe.} = nil
 ): MiddlewareProc =
-  return proc(request: Request, next: proc()) {.gcsafe.} =
+  return proc(request: Request, next: proc() {.gcsafe.}) {.gcsafe.} =
     try:
       next()
     except Exception as e:

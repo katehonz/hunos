@@ -26,6 +26,30 @@ proc newStaticConfig*(
     maxAge: maxAge
   )
 
+proc decodeUrlPath(path: string): string =
+  result = newString(path.len)
+  var i = 0
+  var o = 0
+  while i < path.len:
+    if path[i] == '%' and i + 2 < path.len:
+      let hex = path[i + 1 .. i + 2]
+      var code: int
+      try:
+        code = parseHexInt(hex)
+      except ValueError:
+        result[o] = path[i]
+        inc o
+        inc i
+        continue
+      result[o] = chr(code)
+      inc o
+      i += 3
+    else:
+      result[o] = path[i]
+      inc o
+      inc i
+  result.setLen(o)
+
 proc guessContentType*(ext: string): string =
   case ext.toLowerAscii()
   of ".html", ".htm": "text/html; charset=utf-8"
@@ -51,14 +75,15 @@ proc guessContentType*(ext: string): string =
   else: "application/octet-stream"
 
 proc serveFile*(config: StaticConfig, urlPath: string): FileEntry =
-  # Strip the URL prefix
-  var relPath = urlPath
-  if config.urlPrefix.len > 0 and relPath.startsWith(config.urlPrefix):
-    relPath = relPath[config.urlPrefix.len .. ^1]
+  var relPath = decodeUrlPath(urlPath)
+  if config.urlPrefix.len > 0:
+    if relPath.startsWith(config.urlPrefix):
+      relPath = relPath[config.urlPrefix.len .. ^1]
+    else:
+      return FileEntry()
   if relPath.len == 0 or relPath[0] != '/':
     relPath = "/" & relPath
 
-  # Security: prevent directory traversal
   if ".." in relPath:
     return FileEntry()
 
@@ -68,7 +93,6 @@ proc serveFile*(config: StaticConfig, urlPath: string): FileEntry =
   if not normalized.startsWith(rootNormalized):
     return FileEntry()
   if not fileExists(filePath):
-    # Try index file for directories
     let indexPath = filePath / config.indexFile
     if fileExists(indexPath):
       let ext = indexPath.splitFile().ext

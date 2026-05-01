@@ -72,7 +72,7 @@ proc handler(request: Request) =
         if k == "expert":
           try:
             expertId = parseInt(v)
-          except:
+          except ValueError:
             expertId = 0
 
       let result = simulateInference(expertId)
@@ -140,7 +140,7 @@ proc main() =
           )
           if resp.len > 0:
             inc localCount
-        except:
+        except Exception:
           discard
       client.close()
       perClientCounts[i].store(localCount)

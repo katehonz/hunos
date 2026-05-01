@@ -8,7 +8,7 @@
 ##   nim c --threads:on --mm:orc -d:release -r tests/test_concurrent.nim
 
 import hunos, std/os, std/times, std/strutils, std/atomics, std/httpclient
-import ../tests/wrk_shared
+import ./wrk_shared
 
 const
   numClientThreads = 16

@@ -49,7 +49,8 @@ proc headerContainsToken*(headers: HttpHeaders, key, token: string): bool =
 
 proc encodeHeaders*(
   statusCode: int,
-  headers: HttpHeaders
+  headers: HttpHeaders,
+  httpVersion: HttpVersion = Http11
 ): string {.raises: [], gcsafe.} =
   let
     status =
@@ -79,14 +80,24 @@ proc encodeHeaders*(
   headersLen += 2
 
   result = newString(headersLen)
-  result[0] = 'H'
-  result[1] = 'T'
-  result[2] = 'T'
-  result[3] = 'P'
-  result[4] = '/'
-  result[5] = '1'
-  result[6] = '.'
-  result[7] = '1'
+  if httpVersion == Http10:
+    result[0] = 'H'
+    result[1] = 'T'
+    result[2] = 'T'
+    result[3] = 'P'
+    result[4] = '/'
+    result[5] = '1'
+    result[6] = '.'
+    result[7] = '0'
+  else:
+    result[0] = 'H'
+    result[1] = 'T'
+    result[2] = 'T'
+    result[3] = 'P'
+    result[4] = '/'
+    result[5] = '1'
+    result[6] = '.'
+    result[7] = '1'
   result[8] = ' '
 
   var pos = 9
@@ -117,7 +128,7 @@ proc encodeFrameHeader*(
   opcode: uint8,
   payloadLen: int
 ): string {.raises: [], gcsafe.} =
-  assert (opcode and 0b11110000) == 0
+  let opcode = opcode and 0b00001111'u8
 
   var frameHeaderLen = 2
   if payloadLen <= 125:

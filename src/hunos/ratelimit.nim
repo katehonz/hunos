@@ -13,21 +13,24 @@ proc newRateLimiter*(windowSize: float = 60.0, maxRequests: int = 100): RateLimi
   initLock(result.lock)
   result.clients = initTable[string, seq[float64]]()
 
+proc close*(limiter: var RateLimiter) =
+  deinitLock(limiter.lock)
+
 proc isAllowed*(limiter: var RateLimiter, clientIP: string): bool =
   let now = epochTime()
   withLock limiter.lock:
     if clientIP notin limiter.clients:
       limiter.clients[clientIP] = @[]
 
-    var timestamps = limiter.clients[clientIP]
-    # Remove expired entries
-    var valid: seq[float64]
-    for ts in timestamps:
-      if now - ts < limiter.windowSize:
-        valid.add(ts)
-    limiter.clients[clientIP] = valid
+    # Remove expired entries in-place
+    var writeIdx = 0
+    for readIdx in 0 ..< limiter.clients[clientIP].len:
+      if now - limiter.clients[clientIP][readIdx] < limiter.windowSize:
+        limiter.clients[clientIP][writeIdx] = limiter.clients[clientIP][readIdx]
+        inc writeIdx
+    limiter.clients[clientIP].setLen(writeIdx)
 
-    if valid.len >= limiter.maxRequests:
+    if writeIdx >= limiter.maxRequests:
       return false
 
     limiter.clients[clientIP].add(now)

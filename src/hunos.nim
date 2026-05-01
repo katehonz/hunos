@@ -5,12 +5,12 @@ when not defined(nimdoc):
 when not compileOption("threads"):
   {.error: "Using --threads:on is required by Hunos.".}
 
-import hunos/common, hunos/internal, hunos/sha
+import hunos/common, hunos/internal, hunos/sha, hunos/compress
 import std/atomics, std/cpuinfo, std/deques, std/hashes,
-    std/nativesockets, std/os, std/parseutils, std/random,
+    std/nativesockets, std/os, std/random,
     std/selectors, std/sets, std/tables, std/times
 
-from std/strutils import find, cmpIgnoreCase, toLowerAscii
+from std/strutils import find, cmpIgnoreCase, toLowerAscii, split
 
 when defined(linux):
   when defined(nimdoc):
@@ -22,7 +22,7 @@ when defined(linux):
 
 when defined(windows):
   from std/winlean import TCP_NODELAY
-elif defined(posix):
+elif defined(posix) and not defined(linux):
   from std/posix import TCP_NODELAY
 
 import std/locks
@@ -50,7 +50,7 @@ type
     headers*: HttpHeaders
     body*: string
     remoteAddress*: string
-    server: Server
+    server*: Server
     clientSocket: SocketHandle
     clientId: uint64
     responded: bool
@@ -163,13 +163,15 @@ type
     event: WebSocketEvent
     message: Message
 
-proc parseUrl(uri: string): tuple[path: string, query: seq[(string, string))] =
+type QueryParam = (string, string)
+
+proc parseUrl(uri: string): tuple[path: string, query: seq[QueryParam]] =
   let qPos = uri.find('?')
   if qPos == -1:
     return (uri, @[])
   let path = uri[0 ..< qPos]
   let queryStr = uri[qPos + 1 .. ^1]
-  var params: seq[(string, string)]
+  var params: seq[QueryParam]
   for pair in queryStr.split('&'):
     let eqPos = pair.find('=')
     if eqPos == -1:
@@ -191,13 +193,16 @@ proc `$`*(request: Request): string {.gcsafe.} =
 proc `$`*(websocket: WebSocket): string =
   "WebSocket " & $cast[uint](hash(websocket))
 
-proc log(server: Server, level: LogLevel, args: varargs[string]) =
+proc log*(server: Server, level: LogLevel, args: varargs[string]) =
   if server.logHandler == nil:
     return
   try:
     server.logHandler(level, args)
   except Exception:
     discard
+
+proc log*(request: Request, level: LogLevel, args: varargs[string]) =
+  request.server.log(level, args)
 
 proc registerHandle2(
   selector: Selector[DataEntry],
@@ -319,10 +324,13 @@ proc respond*(
     if k notin headers:
       headers[k] = v
 
-  if body.len > 860 and "Content-Encoding" notin headers:
-    # Compression would go here if zippy was available
-    # For zero-dependency build, we skip compression
-    discard
+  if body.len > compressMinLen and "Content-Encoding" notin headers:
+    let acceptEncoding = request.headers["Accept-Encoding"]
+    if acceptEncoding.len > 0:
+      let (compressed, encoding) = compressBody(body, acceptEncoding)
+      if encoding.len > 0:
+        body = compressed
+        headers["Content-Encoding"] = encoding
 
   if "Content-Length" notin headers:
     let shouldAddContentLengthHeader =
@@ -330,7 +338,7 @@ proc respond*(
     if shouldAddContentLengthHeader or body.len > 0:
       headers["Content-Length"] = $body.len
 
-  encodedResponse.buffer1 = encodeHeaders(statusCode, headers)
+  encodedResponse.buffer1 = encodeHeaders(statusCode, headers, request.httpVersion)
   if encodedResponse.buffer1.len + body.len < 32 * 1024:
     encodedResponse.buffer1 &= body
   else:
@@ -1004,7 +1012,8 @@ proc destroy(server: Server, joinThreads: bool) {.raises: [].} =
   else:
     discard
 
-proc loopForever(server: Server) {.raises: [OSError, IOSelectorsException].} =
+{.push warning[ProveInit]: off.}
+proc loopForever(server: Server) {.raises: [IOSelectorsException].} =
   var
     readyKeys: array[maxEventsPerSelectLoop, ReadyKey]
     receivedFrom, sentTo: seq[SocketHandle]
@@ -1237,6 +1246,7 @@ proc loopForever(server: Server) {.raises: [OSError, IOSelectorsException].} =
           websocket.postWebSocketUpdate(error)
         var close = WebSocketUpdate(event: CloseEvent)
         websocket.postWebSocketUpdate(close)
+{.pop.}
 
 proc close*(server: Server) {.raises: [], gcsafe.} =
   if server.socket.int != 0:
@@ -1283,7 +1293,7 @@ proc serve*(
 
     let dataEntry = DataEntry(kind: ServerSocketEntry)
     server.selector.registerHandle2(server.socket, {Read}, dataEntry)
-  except Exception as e:
+  except Exception:
     server.destroy(true)
     raise currentExceptionAsHunosError()
 
@@ -1352,7 +1362,7 @@ proc newServer*(
 
     for i in 0 ..< workerThreads:
       createThread(result.workerThreads[i], workerProc, result)
-  except Exception as e:
+  except Exception:
     result.destroy(true)
     raise currentExceptionAsHunosError()
 

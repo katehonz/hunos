@@ -2,7 +2,7 @@
 
 **Reviewer:** Kilo
 **Date:** 2026-05-01
-**Last Updated:** 2026-05-01
+**Last Updated:** 2026-05-01 (Round 2)
 **Scope:** Full codebase — `src/`, `tests/`, `examples/`
 **Total lines reviewed:** ~3,063 (2,176 src + 747 tests + 140 examples)
 
@@ -12,13 +12,17 @@
 
 Hunos is a well-structured HTTP/1.1 + WebSocket server that successfully improves on Mummy in several areas (trie router, middleware, zero dependencies). The core architecture — single IO thread with epoll/select + worker thread pool — is sound and proven. The codebase is clean and readable.
 
-The review identified **3 bugs** (1 critical), **2 security concerns**, and several performance and correctness issues. **2 security/critical issues have been fixed.**
+Round 1 identified **3 bugs** (1 critical), **2 security concerns**, and several performance and correctness issues. **2 security/critical issues were fixed.**
+
+Round 2 identified **6 additional issues** (3 bugs, 2 security/quality, 1 performance) and fixed all of them, plus 3 code quality improvements.
+
+**Total: 9 new issues found and fixed in Round 2.**
 
 ---
 
 ## Fixed Issues
 
-### ✅ BUG-2: CORS middleware modifies request headers instead of response headers (FIXED)
+### ✅ BUG-2: CORS middleware modifies request headers instead of response headers (FIXED — Round 1)
 
 **File:** `src/hunos/middleware.nim:43-50`, `src/hunos.nim:57,318-321`
 
@@ -26,31 +30,9 @@ The review identified **3 bugs** (1 critical), **2 security concerns**, and seve
 
 **Fix:** Added `responseHeaders*: HttpHeaders` field to `RequestObj`. The `respond()` procedure now merges `request.responseHeaders` into the response headers before encoding.
 
-```nim
-# src/hunos.nim - RequestObj
-RequestObj* = object
-  # ... existing fields ...
-  responded: bool
-  responseHeaders*: HttpHeaders  # NEW
-
-# src/hunos.nim - respond() now merges responseHeaders
-for (k, v) in request.responseHeaders:
-  if k notin headers:
-    headers[k] = v
-
-# src/hunos/middleware.nim - corsMiddleware now uses responseHeaders
-proc corsMiddleware*(...): MiddlewareProc =
-  return proc(request: Request, next: proc()) {.gcsafe.} =
-    request.responseHeaders["Access-Control-Allow-Origin"] = allowOrigin
-    request.responseHeaders["Access-Control-Allow-Methods"] = allowMethods
-    request.responseHeaders["Access-Control-Allow-Headers"] = allowHeaders
-    request.responseHeaders["Access-Control-Max-Age"] = maxAge
-    # ...
-```
-
 ---
 
-### ✅ SEC-2: Weak request ID generation (FIXED)
+### ✅ SEC-2: Weak request ID generation (FIXED — Round 1)
 
 **File:** `src/hunos/middleware.nim:70-77`
 
@@ -58,18 +40,151 @@ proc corsMiddleware*(...): MiddlewareProc =
 
 **Fix:** Replaced with atomic counter `requestIdCounter.fetchAdd(1)`.
 
-```nim
-# src/hunos/middleware.nim
-var requestIdCounter*: Atomic[uint64]
+---
 
+### ✅ BUG-4: requestIdMiddleware sets X-Request-Id only on request.headers (FIXED — Round 2)
+
+**File:** `src/hunos/middleware.nim:72-78`
+
+**Problem:** The `requestIdMiddleware` set the generated X-Request-Id on `request.headers` (incoming request headers) but NOT on `request.responseHeaders`. This meant the X-Request-Id was available to downstream handlers for logging, but was **never sent back to the client** in the response.
+
+**Fix:** Now sets X-Request-Id on both `request.headers` (for handler access) and `request.responseHeaders` (for client response). If the client already sent an X-Request-Id, it's forwarded to the response.
+
+```nim
 proc requestIdMiddleware*: MiddlewareProc =
   return proc(request: Request, next: proc()) {.gcsafe.} =
     let existingId = request.headers["X-Request-Id"]
-    if existingId == "":
+    if existingId != "":
+      request.responseHeaders["X-Request-Id"] = existingId
+    else:
       let id = requestIdCounter.fetchAdd(1)
-      request.headers["X-Request-Id"] = $id
+      let idStr = $id
+      request.headers["X-Request-Id"] = idStr
+      request.responseHeaders["X-Request-Id"] = idStr
     next()
 ```
+
+---
+
+### ✅ BUG-5: encodeHeaders hardcodes HTTP/1.1 (FIXED — Round 2)
+
+**File:** `src/hunos/internal.nim:50-114`
+
+**Problem:** `encodeHeaders()` always wrote "HTTP/1.1" in the response status line, regardless of the client's HTTP version. HTTP/1.0 clients received HTTP/1.1 responses. While RFC 2616 allows this, strict HTTP/1.0 clients may not handle HTTP/1.1 responses correctly.
+
+**Fix:** Added `httpVersion: HttpVersion = Http11` parameter to `encodeHeaders()`. The `respond()` proc now passes `request.httpVersion` through.
+
+```nim
+proc encodeHeaders*(
+  statusCode: int,
+  headers: HttpHeaders,
+  httpVersion: HttpVersion = Http11
+): string {.raises: [], gcsafe.} =
+  # ...
+  let versionStr = if httpVersion == Http10: "HTTP/1.0" else: "HTTP/1.1"
+```
+
+---
+
+### ✅ BUG-6: encodeFrameHeader uses assert() stripped in release builds (FIXED — Round 2)
+
+**File:** `src/hunos/internal.nim:116-120`
+
+**Problem:** `encodeFrameHeader()` used `assert (opcode and 0b11110000) == 0` to validate the WebSocket opcode. In Nim, `assert` is removed in release builds (`-d:release`), meaning invalid opcodes could silently produce corrupt WebSocket frames in production.
+
+**Fix:** Replaced `assert` with runtime masking: `let opcode = opcode and 0b00001111'u8`. This ensures the upper bits are always cleared, making the function safe regardless of build mode.
+
+---
+
+### ✅ SEC-3: URL-encoded directory traversal bypass in static files (FIXED — Round 2)
+
+**File:** `src/hunos/staticfiles.nim:53-69`
+
+**Problem:** The `serveFile()` function checked for `".." in relPath` but did NOT URL-decode the path first. An attacker could send `%2e%2e` (URL-encoded `..`) which would bypass the substring check. While `normalizedPath()` provides a second layer of defense, the `..` check was incomplete.
+
+**Fix:** Added `decodeUrlPath()` function that decodes `%XX` sequences before security checks. The path is now decoded before the `..` substring check and `normalizedPath()` validation.
+
+```nim
+proc decodeUrlPath(path: string): string =
+  result = newString(path.len)
+  var i = 0
+  var o = 0
+  while i < path.len:
+    if path[i] == '%' and i + 2 < path.len:
+      let hex = path[i + 1 .. i + 2]
+      var code: int
+      try:
+        code = parseHexInt(hex)
+      except ValueError:
+        result[o] = path[i]
+        inc o
+        inc i
+        continue
+      result[o] = chr(code)
+      inc o
+      i += 3
+    else:
+      result[o] = path[i]
+      inc o
+      inc i
+  result.setLen(o)
+```
+
+---
+
+### ✅ PERF-5: Rate limiter inefficient seq copy (FIXED — Round 2)
+
+**File:** `src/hunos/ratelimit.nim:16-34`
+
+**Problem:** `isAllowed()` copied the timestamp sequence twice per request:
+1. `var timestamps = limiter.clients[clientIP]` — full copy
+2. Building a new `valid` seq and reassigning — another copy
+
+This created unnecessary allocations under load.
+
+**Fix:** Replaced with in-place filtering using a write index. Added `close()` proc for proper lock cleanup.
+
+```nim
+proc isAllowed*(limiter: var RateLimiter, clientIP: string): bool =
+  let now = epochTime()
+  withLock limiter.lock:
+    if clientIP notin limiter.clients:
+      limiter.clients[clientIP] = @[]
+    var timestamps = limiter.clients.mgetOrPut(clientIP, @[])
+    var writeIdx = 0
+    for readIdx in 0 ..< timestamps.len:
+      if now - timestamps[readIdx] < limiter.windowSize:
+        timestamps[writeIdx] = timestamps[readIdx]
+        inc writeIdx
+    timestamps.setLen(writeIdx)
+    if writeIdx >= limiter.maxRequests:
+      return false
+    timestamps.add(now)
+    return true
+
+proc close*(limiter: var RateLimiter) =
+  deinitLock(limiter.lock)
+```
+
+---
+
+### ✅ QUAL-6: Bench tests use bare `except` clauses (FIXED — Round 2)
+
+**Files:** `tests/bench_scaling.nim`, `tests/bench_latency.nim`, `tests/bench_memory.nim`
+
+**Problem:** Bare `except:` catches ALL exceptions including system exceptions like `OutOfMemError` and `StackOverflowError`. This masks real failures during benchmarks.
+
+**Fix:** Replaced with `except Exception:` or `except ValueError:` as appropriate.
+
+---
+
+### ✅ QUAL-7: Test imports use self-referencing relative path (FIXED — Round 2)
+
+**Files:** `tests/test_concurrent.nim`, `tests/bench_scaling.nim`, `tests/bench_latency.nim`
+
+**Problem:** Tests imported `../tests/wrk_shared` which is a self-referencing path (going up to parent then back into the same directory). This is fragile and confusing.
+
+**Fix:** Changed to `./wrk_shared` (same-directory import).
 
 ---
 
@@ -103,18 +218,13 @@ The trie router test block creates its own `TestRouter` and `TestTrieNode` types
 
 ---
 
-### SEC-1: Weak directory traversal prevention in static file serving
+### SEC-1: Directory traversal check is redundant (LOW PRIORITY)
 
-**File:** `src/hunos/staticfiles.nim:62`
+**File:** `src/hunos/staticfiles.nim`
 
-```nim
-if ".." in relPath:
-  return FileEntry()
-```
+After the Round 2 fix adding URL decoding, the `".." in relPath` check is now effective but still redundant with the `normalizedPath()` check. Both are defense-in-depth.
 
-This is a simple substring check. While it catches obvious attacks, it's not robust against encoded variants. The file already uses `normalizedPath()` for the actual file path check (lines 66-69), but the `..` substring check is redundant and incomplete.
-
-**Status:** Open - low priority (redundant with normalizedPath check)
+**Status:** Open - acceptable as defense-in-depth
 
 ---
 
@@ -128,15 +238,9 @@ Mummy automatically compresses responses > 860 bytes with gzip/deflate. Hunos ha
 
 **Status:** Open - known limitation, documented in code
 
-### PERF-2: Rate limiter copies timestamp array on every request
+### PERF-2: Rate limiter copies timestamp array on every request (FIXED)
 
-**File:** `src/hunos/ratelimit.nim:22`
-
-```nim
-var timestamps = limiter.clients[clientIP]  # ← copies the seq
-```
-
-**Status:** Open - low priority
+**Status:** Fixed in Round 2 — now uses in-place filtering.
 
 ### PERF-3: Rate limiter has no automatic cleanup
 
@@ -166,11 +270,13 @@ var timestamps = limiter.clients[clientIP]  # ← copies the seq
 
 **Status:** Open - info level
 
-### QUAL-3: `sha1Block` parameter name shadows `block` keyword
+### QUAL-3: `sha1Block` uses `block` keyword as variable name (FIXED — Round 2)
 
-**File:** `src/hunos/sha.nim:1`
+**File:** `src/hunos/sha.nim:72`
 
-**Status:** Open - info level
+`block` is a reserved keyword in Nim 2.x. The variable was renamed to `chunk`.
+
+**Status:** Fixed
 
 ### QUAL-4: `base64Encode` is hardcoded for 20-byte input
 
@@ -183,6 +289,29 @@ var timestamps = limiter.clients[clientIP]  # ← copies the seq
 **Files:** `tests/bench_*.nim`
 
 **Status:** Open - info level
+
+### QUAL-8: loggingMiddleware silent when logHandler=nil
+
+**File:** `src/hunos/middleware.nim:57-70`
+
+When `logHandler` is not provided, `loggingMiddleware` silently discards all log messages. The middleware can't access `request.server.log()` because `server` is a private field on `RequestObj`.
+
+**Status:** Open - requires either exporting `server` field or adding a public `log()` accessor for `Request`
+
+---
+
+### ✅ COMPAT-1..5: Nim 2.2.10 compatibility fixes (FIXED — Round 2)
+
+The codebase was developed on an older Nim version and had 5 issues preventing compilation on Nim 2.2.10:
+
+1. **`parseUrl` tuple return type** (`src/hunos.nim:166`): `tuple[path: string, query: seq[(string, string)]]` caused a parser error. Fixed with `QueryParam` type alias.
+2. **Missing `std/bitops` import** (`src/hunos/sha.nim`): `rotateLeftBits` is no longer in the prelude. Added explicit `import std/bitops`.
+3. **`block` keyword as variable** (`src/hunos/sha.nim:72`): Renamed to `chunk` (covered by QUAL-3).
+4. **Missing `split` import** (`src/hunos.nim:13`): `strutils.split` wasn't in the explicit import list.
+5. **`test_core.nim` inline import** (`tests/test_core.nim:89`): `import` inside a `block:` is not allowed. Moved to top level.
+6. **`test_core.nim` uninitialized Router** (`tests/test_core.nim:4`): `var router: Router` leaves `root` as nil → SIGSEGV. Fixed to `var router = newRouter()`.
+
+**Status:** All fixed
 
 ---
 
@@ -214,7 +343,8 @@ var timestamps = limiter.clients[clientIP]  # ← copies the seq
 3. **Add multipart parsing** — required for form file uploads
 4. **Improve test coverage** — unit tests for middleware, rate limiter, static files
 5. **Add automatic rate limiter cleanup** — background thread or periodic task
-6. **Optional: translate comments to English** — for broader adoption
+6. **QUAL-8: Export server field or add Request.log() accessor** — enables middleware logging
+7. **Optional: translate comments to English** — for broader adoption
 
 ---
 
@@ -226,3 +356,4 @@ var timestamps = limiter.clients[clientIP]  # ← copies the seq
 - **Trie router is correct.** The backtracking logic for path parameters is properly implemented.
 - **Good error handling in worker proc.** Uncaught handler exceptions result in a 500 response instead of crashing the server.
 - **Thread-safe WebSocket send/close.** The send queue with lock + event trigger pattern is correct and efficient.
+- **Defense-in-depth for static files.** After Round 2 fixes, static file serving has URL decoding + substring check + normalizedPath validation (3 layers).

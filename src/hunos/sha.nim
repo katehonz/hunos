@@ -1,3 +1,5 @@
+import std/bitops
+
 proc sha1Block(state: var array[5, uint32], chunk: array[16, uint32]) =
   var w: array[80, uint32]
   for i in 0 ..< 16:
@@ -69,14 +71,14 @@ proc sha1*(data: string): array[20, uint8] =
   # Process 64-byte blocks
   var offset = 0
   while offset < padded.len:
-    var block: array[16, uint32]
+    var chunk: array[16, uint32]
     for i in 0 ..< 16:
       let base = offset + i * 4
-      block[i] = (cast[uint8](padded[base]).uint32 shl 24) or
+      chunk[i] = (cast[uint8](padded[base]).uint32 shl 24) or
                   (cast[uint8](padded[base + 1]).uint32 shl 16) or
                   (cast[uint8](padded[base + 2]).uint32 shl 8) or
                   cast[uint8](padded[base + 3]).uint32
-    sha1Block(state, block)
+    sha1Block(state, chunk)
     offset += 64
 
   for i in 0 ..< 5:

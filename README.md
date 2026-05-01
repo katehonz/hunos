@@ -2,7 +2,7 @@
 
 High-performance, multi-threaded HTTP/1.1 and WebSocket server for Nim.
 
-Hunos is built on the proven single-IO-thread + worker-pool architecture, with significant improvements over [Mummy](https://github.com/guzba/mummy) in routing performance, developer ergonomics, and built-in features — all with **zero external dependencies**.
+Hunos is built on the proven single-IO-thread + worker-pool architecture, with significant improvements over [Mummy](https://github.com/guzba/mummy) in routing performance, developer ergonomics, and built-in features.
 
 ## Table of Contents
 
@@ -14,11 +14,14 @@ Hunos is built on the proven single-IO-thread + worker-pool architecture, with s
 - [Routing](#routing)
 - [Middleware](#middleware)
 - [WebSocket](#websocket)
+- [Compression](#compression)
+- [Multipart Form Parsing](#multipart-form-parsing)
 - [Static File Serving](#static-file-serving)
 - [Rate Limiting](#rate-limiting)
 - [Benchmarks](#benchmarks)
 - [Building](#building)
 - [Testing](#testing)
+- [Project Structure](#project-structure)
 - [License](#license)
 
 ## Key Improvements Over Mummy
@@ -27,11 +30,13 @@ Hunos is built on the proven single-IO-thread + worker-pool architecture, with s
 |---------|-------|-------|
 | **Router algorithm** | O(routes × parts) linear scan | O(path_length) trie |
 | **Middleware** | None | Composable pipeline with CORS, logging, recovery |
-| **External deps** | zippy, webby, crunchy | **None** (stdlib only) |
+| **Compression** | zippy (external) | zippy (optional, `-d:hunosNoCompression` to disable) |
+| **Multipart parsing** | Built-in | Built-in (`hunos/multipart`) |
 | **Rate limiting** | None | Thread-safe sliding window |
-| **Static files** | None | MIME detection, traversal protection |
+| **Static files** | None | MIME detection, traversal protection, URL decoding |
 | **Status codes** | Numeric only | Human-readable messages |
 | **SHA1 / Base64** | External crates | Built-in implementation |
+| **Nim compatibility** | 2.0+ | 2.0+ (tested on 2.2.10) |
 
 ## Architecture
 
@@ -68,7 +73,7 @@ nimble install hunos
 Or add to your `.nimble` file:
 
 ```nim
-requires "hunos >= 1.0.0"
+requires "hunos >= 1.1.0"
 ```
 
 **Requirements:** Nim >= 2.0.0, `--threads:on`, `--mm:orc` (or `--mm:arc` / `--mm:atomicArc`).
@@ -110,7 +115,7 @@ proc userHandler(request: Request) =
   headers["Content-Type"] = "text/plain"
   request.respond(200, headers, "User: " & userId)
 
-var router: Router
+var router = newRouter()
 router.get("/", indexHandler)
 router.get("/user/@id", userHandler)
 
@@ -152,7 +157,7 @@ proc websocketHandler(websocket: WebSocket, event: WebSocketEvent, message: Mess
   of ErrorEvent:
     discard
 
-var router: Router
+var router = newRouter()
 router.get("/ws", upgradeHandler)
 
 let server = newServer(router, websocketHandler)
@@ -170,7 +175,7 @@ proc apiHandler(request: Request) =
   headers["Content-Type"] = "application/json"
   request.respond(200, headers, """{"message": "Hello"}""")
 
-var router: Router
+var router = newRouter()
 router.get("/api", apiHandler)
 
 var stack = newMiddlewareStack(router)
@@ -203,6 +208,7 @@ proc newServer*(
 proc serve*(server: Server, port: Port, address = "localhost")
 proc close*(server: Server)
 proc waitUntilReady*(server: Server, timeout: float = 10)
+proc log*(server: Server, level: LogLevel, args: varargs[string])
 ```
 
 ### Request
@@ -219,11 +225,14 @@ RequestObj = object
   headers*: HttpHeaders          # Case-insensitive key-value pairs
   body*: string
   remoteAddress*: string
+  server*: Server                # Server instance
+  responseHeaders*: HttpHeaders  # Merged into response by respond()
 
 proc respond*(request: Request, statusCode: int,
               headers: HttpHeaders = @[], body: string = "")
 proc upgradeToWebSocket*(request: Request): WebSocket
 proc responded*(request: Request): bool
+proc log*(request: Request, level: LogLevel, args: varargs[string])
 ```
 
 ### HttpHeaders
@@ -251,7 +260,7 @@ Routes are registered via the `Router` object from `hunos/router`:
 ```nim
 import hunos/router
 
-var router: Router
+var router = newRouter()
 router.get("/path", handler)
 router.post("/path", handler)
 router.put("/path", handler)
@@ -300,14 +309,14 @@ The middleware system uses a pipeline pattern where each middleware calls `next(
 | Middleware | Description |
 |-----------|-------------|
 | `corsMiddleware()` | Adds CORS headers, handles OPTIONS preflight |
-| `loggingMiddleware()` | Logs request method, URI, duration |
-| `requestIdMiddleware()` | Adds X-Request-Id header if not present |
+| `loggingMiddleware()` | Logs request method, URI, duration (uses server logger by default) |
+| `requestIdMiddleware()` | Adds X-Request-Id to request and response headers |
 | `recoveryMiddleware()` | Catches unhandled exceptions, returns 500 |
 
 ### Custom Middleware
 
 ```nim
-proc authMiddleware(request: Request, next: proc()) {.gcsafe.} =
+proc authMiddleware(request: Request, next: proc() {.gcsafe.}) {.gcsafe.} =
   let token = request.headers["Authorization"]
   if token == "":
     request.respond(401)
@@ -357,6 +366,73 @@ WebSocket connections are established by upgrading an HTTP request:
 
 WebSocket `send()` and `close()` are thread-safe and can be called from any thread. WebSocket events for the same connection are dispatched serially — a handler will not be called again for the same connection until it returns.
 
+## Compression
+
+Hunos automatically compresses HTTP responses using gzip or deflate when:
+
+1. The response body exceeds 860 bytes
+2. The client sends an `Accept-Encoding: gzip` or `Accept-Encoding: deflate` header
+3. The response doesn't already have a `Content-Encoding` header
+
+Compression uses [zippy](https://github.com/guzba/zippy) and is enabled by default. To disable:
+
+```bash
+nim c --threads:on --mm:orc -d:hunosNoCompression -d:release your_app.nim
+```
+
+## Multipart Form Parsing
+
+Parse `multipart/form-data` requests (file uploads, HTML forms):
+
+```nim
+import hunos, hunos/multipart
+
+proc uploadHandler(request: Request) =
+  let contentType = request.headers["Content-Type"]
+  if "multipart/form-data" notin contentType:
+    request.respond(400, body = "Expected multipart/form-data")
+    return
+
+  let data = decodeMultipart(request.body, contentType)
+
+  # Get text field value
+  let username = data.getField("username")
+
+  # Get uploaded file
+  let file = data.getFile("avatar")
+  if file.filename.len > 0:
+    echo "File: ", file.filename
+    echo "Type: ", file.contentType
+    echo "Size: ", file.body.len
+    writeFile("uploads/" & file.filename, file.body)
+
+  request.respond(200, body = "Upload successful")
+```
+
+### Multipart API
+
+```nim
+type
+  MultipartEntry = object
+    name*: string           # Field name from Content-Disposition
+    filename*: string       # Filename (empty for text fields)
+    contentType*: string    # Content-Type header value
+    headers*: seq[(string, string)]  # All part headers
+    body*: string           # Part body content
+    bodyStart*: int         # Offset into original body
+    bodyLen*: int           # Length of part body
+
+  MultipartData = object
+    entries*: seq[MultipartEntry]
+    body*: string           # Original request body
+
+proc decodeMultipart*(body: string, contentType: string): MultipartData
+proc getField*(data: MultipartData, name: string): string
+proc getFile*(data: MultipartData, name: string): MultipartEntry
+proc getFields*(data: MultipartData, name: string): seq[string]
+proc hasField*(data: MultipartData, name: string): bool
+```
+
 ## Static File Serving
 
 ```nim
@@ -381,7 +457,7 @@ proc staticHandler(request: Request) =
     request.respond(404)
 ```
 
-**Security:** Directory traversal attempts (`..` in path) are rejected.
+**Security:** Directory traversal attempts (`..` in path, including URL-encoded `%2e%2e`) are rejected. Paths are validated with both substring check and `normalizedPath()`.
 
 **MIME types:** 20+ types built-in including HTML, CSS, JS, JSON, images, fonts, WASM.
 
@@ -402,11 +478,17 @@ proc rateLimitedHandler(request: Request) =
     request.respond(429, headers, "Too Many Requests")
     return
   # Normal handling...
+
+# Clean up expired entries periodically
+limiter.cleanup()
+
+# Release lock when done
+limiter.close()
 ```
 
 **Thread safety:** The rate limiter uses a lock internally and is safe to call from worker threads.
 
-**Cleanup:** Call `limiter.cleanup()` periodically (e.g., from a timer) to free memory from expired IP entries.
+**Cleanup:** Call `limiter.cleanup()` periodically (e.g., from a timer) to free memory from expired IP entries. Call `limiter.close()` to release the lock when the limiter is no longer needed.
 
 ## Benchmarks
 
@@ -483,13 +565,31 @@ nim c --threads:on --mm:orc -d:release examples/basic.nim
 
 # With all optimizations
 nim c --threads:on --mm:orc -d:release --passC:"-flto" --passL:"-flto" examples/basic.nim
+
+# Without compression (zero external dependencies)
+nim c --threads:on --mm:orc -d:hunosNoCompression -d:release examples/basic.nim
 ```
 
 ## Testing
 
 ```bash
-# Unit tests (SHA1, Base64, trie router)
-nim c --threads:on --mm:orc -r tests/test_core.nim
+# Unit tests (SHA1, Base64, HttpHeaders, PathParams, trie router)
+nim c --threads:on --mm:orc --path:src -r tests/test_core.nim
+
+# Router edge cases (params, wildcards, error handlers, all HTTP methods)
+nim c --threads:on --mm:orc --path:src -r tests/test_router.nim
+
+# Middleware pipeline (CORS, logging, request ID, recovery)
+nim c --threads:on --mm:orc --path:src -r tests/test_middleware.nim
+
+# Rate limiter (sliding window, IP isolation, cleanup)
+nim c --threads:on --mm:orc --path:src -r tests/test_ratelimit.nim
+
+# Static files (MIME types, traversal protection, URL prefix)
+nim c --threads:on --mm:orc --path:src -r tests/test_staticfiles.nim
+
+# Multipart form parsing (text fields, file uploads, boundaries)
+nim c --threads:on --mm:orc --path:src -r tests/test_multipart.nim
 
 # Concurrency correctness (16 threads × 100 requests)
 nim c --threads:on --mm:orc -d:release -r tests/test_concurrent.nim
@@ -512,7 +612,9 @@ hunos/
 │   ├── hunos.nim              # Core server (types, IO loop, workers, HTTP/WS parsing)
 │   └── hunos/
 │       ├── common.nim          # Error types, log levels, PathParams
+│       ├── compress.nim        # gzip/deflate compression (wraps zippy)
 │       ├── internal.nim        # HttpHeaders, encoding, parsing helpers
+│       ├── multipart.nim       # multipart/form-data parser
 │       ├── router.nim          # Trie-based router
 │       ├── middleware.nim       # Middleware pipeline + built-in middleware
 │       ├── sha.nim             # SHA1 + Base64 (for WebSocket handshake)
@@ -524,16 +626,22 @@ hunos/
 │   ├── websocket_example.nim
 │   └── middleware_example.nim
 ├── tests/
-│   ├── test_core.nim
-│   ├── test_concurrent.nim
-│   ├── bench_scaling.nim
-│   ├── bench_latency.nim
-│   ├── bench_memory.nim
-│   ├── wrk_hunos.nim
-│   ├── wrk_asynchttpserver.nim
-│   └── wrk_shared.nim
+│   ├── test_core.nim           # SHA1, Base64, headers, path params, router
+│   ├── test_router.nim         # Router edge cases (10 tests)
+│   ├── test_middleware.nim      # Middleware pipeline (6 tests)
+│   ├── test_ratelimit.nim      # Rate limiter (5 tests)
+│   ├── test_staticfiles.nim    # Static files (8 tests)
+│   ├── test_multipart.nim      # Multipart parsing (7 tests)
+│   ├── test_concurrent.nim     # Concurrency correctness
+│   ├── bench_scaling.nim       # Throughput scaling benchmark
+│   ├── bench_latency.nim       # Latency percentile benchmark
+│   ├── bench_memory.nim        # Memory sharing benchmark (MoE)
+│   ├── wrk_hunos.nim           # wrk load generator target
+│   ├── wrk_asynchttpserver.nim # wrk comparison target
+│   └── wrk_shared.nim          # Shared constants
 ├── hunos.nimble
 ├── config.nims
+├── CODE_REVIEW.md
 └── README.md
 ```
 

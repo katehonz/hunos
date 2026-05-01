@@ -12,7 +12,7 @@
 ##   P99 ≈ 20-30ms (compute + occasional contention)
 
 import hunos, std/os, std/times, std/strutils, std/algorithm, std/httpclient
-import ../tests/wrk_shared
+import ./wrk_shared
 
 const
   numRequests = 1000
@@ -57,7 +57,7 @@ proc main() =
   for i in 0 ..< 10:
     try:
       discard client.getContent("http://127.0.0.1:8081/")
-    except:
+    except Exception:
       discard
 
   # Measurement
