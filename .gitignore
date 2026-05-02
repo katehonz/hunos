@@ -42,5 +42,17 @@ Desktop.db
 # Logs
 *.log
 
-# Test / Benchmark artifacts
+# Test / Benchmark artifacts (compiled binaries)
+tests/test_core
+tests/test_router
+tests/test_middleware
+tests/test_ratelimit
+tests/test_staticfiles
+tests/test_multipart
+tests/test_concurrent
+tests/bench_scaling
+tests/bench_latency
+tests/bench_memory
+tests/wrk_hunos
+tests/wrk_asynchttpserver
 tests/nil_repro/

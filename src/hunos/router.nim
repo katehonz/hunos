@@ -12,6 +12,9 @@ type
     paramChild: TrieNode
     paramName: string
     wildcardChild: TrieNode
+    partialChild: TrieNode
+    partialPrefix: string
+    partialSuffix: string
     methods: Table[string, RequestHandler]
 
 proc newRouter*(): Router =
@@ -48,6 +51,13 @@ proc addRoute*(
         node.wildcardChild = TrieNode()
       node = node.wildcardChild
       break
+    elif '*' in part:
+      if node.partialChild == nil:
+        node.partialChild = TrieNode()
+        let starPos = part.find('*')
+        node.partialPrefix = part[0 ..< starPos]
+        node.partialSuffix = part[starPos + 1 .. ^1]
+      node = node.partialChild
     else:
       if part notin node.children:
         node.children[part] = TrieNode()
@@ -111,6 +121,16 @@ proc matchNode(
     let (n, ok) = matchNode(node.children[part], parts, pathParams, idx + 1)
     if ok:
       return (n, true)
+
+  if node.partialChild != nil:
+    let prefix = node.partialPrefix
+    let suffix = node.partialSuffix
+    if part.len >= prefix.len + suffix.len and
+       (prefix.len == 0 or part.startsWith(prefix)) and
+       (suffix.len == 0 or part.endsWith(suffix)):
+      let (n, ok) = matchNode(node.partialChild, parts, pathParams, idx + 1)
+      if ok:
+        return (n, true)
 
   if node.paramChild != nil:
     pathParams.add((node.paramName, part))

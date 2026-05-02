@@ -1,8 +1,22 @@
 # Hunos
 
+[![Nim](https://img.shields.io/badge/Nim-2.0%2B-FFE953?logo=nim)](https://nim-lang.org)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](hunos.nimble)
+
 High-performance, multi-threaded HTTP/1.1 and WebSocket server for Nim.
 
 Hunos is built on the proven single-IO-thread + worker-pool architecture, with significant improvements over [Mummy](https://github.com/guzba/mummy) in routing performance, developer ergonomics, and built-in features.
+
+---
+
+### What's New in v1.2.0
+
+- **Partial wildcard `*` in router** — `/api/*.json`, `/page_*`, `/*/data`, `*something*`
+- **Generic `base64Encode`** — now works with any byte sequence, not just SHA1 output
+- **Slow request warnings** — `loggingMiddleware` uses `WarnLevel` for requests > 1s
+- **Rate limiter auto-cleanup** — periodic in-place cleanup every 10k requests, no memory leaks
+- **Bug fix: `strictParseHex`** — no longer rejects valid hex with leading zeros (e.g., `0a`)
 
 ## Table of Contents
 
@@ -29,6 +43,7 @@ Hunos is built on the proven single-IO-thread + worker-pool architecture, with s
 | Feature | Mummy | Hunos |
 |---------|-------|-------|
 | **Router algorithm** | O(routes × parts) linear scan | O(path_length) trie |
+| **Router wildcards** | `**` only | `**` + `*` partial + `@param` |
 | **Middleware** | None | Composable pipeline with CORS, logging, recovery |
 | **Compression** | zippy (external) | zippy (optional, `-d:hunosNoCompression` to disable) |
 | **Multipart parsing** | Built-in | Built-in (`hunos/multipart`) |
@@ -276,8 +291,13 @@ router.patch("/path", handler)
 |---------|---------|---------|
 | `/` | Root only | `/` |
 | `/users` | Exact segment | `/users` |
+| `/api/*.json` | Partial segment wildcard | `/api/data.json`, `/api/config.json` |
+| `/page_*` | Prefix wildcard | `/page_1`, `/page_about` |
+| `/*/data` | Mid-segment wildcard | `/blog/data`, `/news/data` |
 | `/user/@id` | Named parameter | `/user/42`, `/user/abc` |
 | `/files/**` | Multi-segment wildcard | `/files/a/b/c` |
+
+The `*` wildcard matches within a single path segment and supports prefix (`page_*`), suffix (`*.json`), and contains (`*something*`) patterns. Matching priority: exact → partial wildcard → named param → multi-segment wildcard.
 
 ### Custom Error Handlers
 
@@ -479,16 +499,13 @@ proc rateLimitedHandler(request: Request) =
     return
   # Normal handling...
 
-# Clean up expired entries periodically
-limiter.cleanup()
-
 # Release lock when done
 limiter.close()
 ```
 
 **Thread safety:** The rate limiter uses a lock internally and is safe to call from worker threads.
 
-**Cleanup:** Call `limiter.cleanup()` periodically (e.g., from a timer) to free memory from expired IP entries. Call `limiter.close()` to release the lock when the limiter is no longer needed.
+**Automatic cleanup:** Expired IP entries are cleaned up in-place every 10,000 `isAllowed()` calls — no manual `cleanup()` needed in normal operation. The `cleanup()` proc remains available for explicit forced cleanup. Call `limiter.close()` to release the lock when the limiter is no longer needed.
 
 ## Benchmarks
 

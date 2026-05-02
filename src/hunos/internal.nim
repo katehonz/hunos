@@ -199,9 +199,6 @@ proc strictParseHex*(s: openarray[char]): int =
     i = 0
     bits: uint
 
-  if s.len > 1 and s[i] == '0':
-    invalidHexError()
-
   if s.len > 16:
     integerOutOfRangeError()
 

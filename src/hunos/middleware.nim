@@ -1,4 +1,4 @@
-import ../hunos, std/atomics, std/times
+import ../hunos, std/atomics, std/strutils, std/times
 
 var requestIdCounter*: Atomic[uint64]
 
@@ -64,9 +64,14 @@ proc loggingMiddleware*(
 
     let duration = epochTime() - startTime
     let msg = request.httpMethod & " " & request.uri & " " &
-              $duration & "s"
+              formatFloat(duration, ffDecimal, 4) & "s"
 
-    if logHandler != nil:
+    if duration > 1.0:
+      if logHandler != nil:
+        logHandler("[SLOW] " & msg)
+      else:
+        request.log(WarnLevel, "Slow request: ", msg)
+    elif logHandler != nil:
       logHandler(msg)
     else:
       request.log(InfoLevel, msg)

@@ -87,9 +87,9 @@ proc sha1*(data: string): array[20, uint8] =
     result[i * 4 + 2] = ((state[i] shr 8) and 0xFF).uint8
     result[i * 4 + 3] = (state[i] and 0xFF).uint8
 
-proc base64Encode*(data: array[20, uint8]): string =
+proc base64Encode*(data: openArray[uint8]): string =
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-  let inLen = 20
+  let inLen = data.len
   let outLen = ((inLen + 2) div 3) * 4
   result = newString(outLen)
   var j = 0

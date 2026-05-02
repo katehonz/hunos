@@ -7,7 +7,8 @@
 ## Run:
 ##   nim c --threads:on --mm:orc -d:release -r tests/test_concurrent.nim
 
-import hunos, std/os, std/times, std/strutils, std/atomics, std/httpclient
+import hunos, std/os, std/times, std/strutils, std/atomics
+import std/httpclient except HttpHeaders
 import ./wrk_shared
 
 const
@@ -19,32 +20,32 @@ var
   errorCount: Atomic[int64]
   totalLatencyNs: Atomic[int64]
 
-proc handler(request: Request) =
-  case request.uri:
-  of "/":
-    if request.httpMethod == "GET":
-      var headers: HttpHeaders
-      headers["Content-Type"] = "text/plain"
-      headers["X-Thread-Id"] = "worker"
-      request.respond(200, headers, responseBody)
-    else:
-      request.respond(405)
-  of "/echo":
-    if request.httpMethod == "POST":
-      var headers: HttpHeaders
-      headers["Content-Type"] = request.headers["Content-Type"]
-      request.respond(200, headers, request.body)
-    else:
-      request.respond(405)
-  of "/heavy":
-    if request.httpMethod == "GET":
-      {.gcsafe.}:
+proc handler(request: Request) {.gcsafe.} =
+  {.gcsafe.}:
+    case request.uri:
+    of "/":
+      if request.httpMethod == "GET":
+        var headers: HttpHeaders
+        headers["Content-Type"] = "text/plain"
+        headers["X-Thread-Id"] = "worker"
+        request.respond(200, headers, responseBody)
+      else:
+        request.respond(405)
+    of "/echo":
+      if request.httpMethod == "POST":
+        var headers: HttpHeaders
+        headers["Content-Type"] = request.headers["Content-Type"]
+        request.respond(200, headers, request.body)
+      else:
+        request.respond(405)
+    of "/heavy":
+      if request.httpMethod == "GET":
         sleep(5)
         request.respond(200, body = responseBody)
+      else:
+        request.respond(405)
     else:
-      request.respond(405)
-  else:
-    request.respond(404)
+      request.respond(404)
 
 proc main() =
   echo "=== Hunos Concurrency Correctness Test ==="

@@ -103,6 +103,25 @@ block: # Test multiple path parameters
   router.get("/users/@userId/posts/@postId", handler)
   echo "[OK] Router with multiple path parameters compiles"
 
+block: # Test partial wildcard routes (*.json, page_*, *something*)
+  var router = newRouter()
+  proc handler(request: Request) {.gcsafe.} =
+    request.respond(200, body = "partial_wild")
+  router.get("/api/*.json", handler)
+  echo "[OK] Router with partial wildcard (*.json) compiles"
+
+  var router2 = newRouter()
+  proc handler2(request: Request) {.gcsafe.} =
+    request.respond(200, body = "prefix_wild")
+  router2.get("/page_*", handler2)
+  echo "[OK] Router with prefix wildcard (page_*) compiles"
+
+  var router3 = newRouter()
+  proc handler3(request: Request) {.gcsafe.} =
+    request.respond(200, body = "any_wild")
+  router3.get("/*/data", handler3)
+  echo "[OK] Router with bare wildcard (/*/data) compiles"
+
 block: # Test Router to RequestHandler converter
   var router = newRouter()
   proc handler(request: Request) {.gcsafe.} = discard
