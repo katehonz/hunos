@@ -8,7 +8,7 @@
 ##   nim c --threads:on --mm:orc -d:release -r tests/test_concurrent.nim
 
 import hunos, std/os, std/times, std/strutils, std/atomics
-import std/httpclient except HttpHeaders
+from std/httpclient import newHttpClient, getContent, close
 import ./wrk_shared
 
 const
@@ -47,89 +47,87 @@ proc handler(request: Request) {.gcsafe.} =
     else:
       request.respond(404)
 
-proc main() =
-  echo "=== Hunos Concurrency Correctness Test ==="
-  echo "Client threads: ", numClientThreads
-  echo "Requests per thread: ", requestsPerThread
-  echo "Total requests: ", numClientThreads * requestsPerThread
-  echo ""
+proc serveProc(s: Server) {.thread.} =
+  s.serve(Port(8082))
 
-  let server = newServer(handler, workerThreads = 8)
+proc clientProc(threadId: int) {.thread, gcsafe.} =
+  var client = newHttpClient(timeout = 10000)
+  {.gcsafe.}:
+    let expectedBody = responseBody
+  for j in 0 ..< requestsPerThread:
+    let reqStart = epochTime()
+    try:
+      let resp = client.getContent("http://127.0.0.1:8082/")
+      if resp == expectedBody:
+        let latency = int64((epochTime() - reqStart) * 1_000_000_000)
+        discard totalLatencyNs.fetchAdd(latency)
+        discard successCount.fetchAdd(1)
+      else:
+        echo "Thread ", threadId, ": response mismatch"
+        discard errorCount.fetchAdd(1)
+    except Exception as e:
+      echo "Thread ", threadId, " request ", j, " failed: ", e.msg
+      discard errorCount.fetchAdd(1)
+  client.close()
 
-  var serverThread: Thread[void]
-  createThread(serverThread, proc() =
-    server.serve(Port(8082))
-  )
+echo "=== Hunos Concurrency Correctness Test ==="
+echo "Client threads: ", numClientThreads
+echo "Requests per thread: ", requestsPerThread
+echo "Total requests: ", numClientThreads * requestsPerThread
+echo ""
 
-  server.waitUntilReady()
+let server = newServer(handler, workerThreads = 8)
 
-  successCount.store(0)
-  errorCount.store(0)
-  totalLatencyNs.store(0)
+var serverThread: Thread[Server]
+createThread(serverThread, serveProc, server)
 
-  var clientThreads: seq[Thread[int]]
-  let startTime = epochTime()
+server.waitUntilReady()
 
-  for i in 0 ..< numClientThreads:
-    var t: Thread[int]
-    createThread(t, proc(threadId: int) =
-      let client = newHttpClient(timeout = 10000)
-      for j in 0 ..< requestsPerThread:
-        let reqStart = epochTime()
-        try:
-          let resp = client.getContent("http://127.0.0.1:8082/")
-          if resp == responseBody:
-            let latency = int64((epochTime() - reqStart) * 1_000_000_000)
-            totalLatencyNs.fetchAdd(latency)
-            successCount.fetchAdd(1)
-          else:
-            echo "Thread ", threadId, ": response mismatch"
-            errorCount.fetchAdd(1)
-        except Exception as e:
-          echo "Thread ", threadId, " request ", j, " failed: ", e.msg
-          errorCount.fetchAdd(1)
-      client.close()
-    , i)
-    clientThreads.add(t)
+successCount.store(0)
+errorCount.store(0)
+totalLatencyNs.store(0)
 
-  for t in clientThreads:
-    joinThread(t)
+var clientThreads: array[16, Thread[int]]
+let startTime = epochTime()
 
-  let elapsed = epochTime() - startTime
-  let total = numClientThreads * requestsPerThread
-  let successes = successCount.load()
-  let errors = errorCount.load()
-  let avgLatencyMs = float64(totalLatencyNs.load()) / float64(successes) / 1_000_000.0
+for i in 0 ..< numClientThreads:
+  createThread(clientThreads[i], clientProc, i)
 
-  echo "=== Results ==="
-  echo "Time: ", formatFloat(elapsed, ffDecimal, 2), "s"
-  echo "Success: ", successes, " / ", total
-  echo "Errors: ", errors
-  echo "Throughput: ", int64(float64(successes) / elapsed), " req/s"
-  echo "Avg latency: ", formatFloat(avgLatencyMs, ffDecimal, 2), "ms"
-  echo ""
+for i in 0 ..< numClientThreads:
+  joinThread(clientThreads[i])
 
-  if successes == total:
-    echo "[OK] All ", total, " concurrent requests served correctly"
-  else:
-    echo "[FAIL] ", errors, " requests failed!"
+let elapsed = epochTime() - startTime
+let total = numClientThreads * requestsPerThread
+let successes = successCount.load()
+let errors = errorCount.load()
+let avgLatencyMs = float64(totalLatencyNs.load()) / float64(successes) / 1_000_000.0
 
-  if errors == 0:
-    echo "[OK] No errors with ", numClientThreads, " concurrent clients"
-  else:
-    echo "[FAIL] Errors detected — check thread safety"
+echo "=== Results ==="
+echo "Time: ", formatFloat(elapsed, ffDecimal, 2), "s"
+echo "Success: ", successes, " / ", total
+echo "Errors: ", errors
+echo "Throughput: ", int64(float64(successes) / elapsed), " req/s"
+echo "Avg latency: ", formatFloat(avgLatencyMs, ffDecimal, 2), "ms"
+echo ""
 
-  echo ""
-  echo "=== Thread Safety Verification ==="
-  echo "All threads share responseBody (ReadOnly) without data race."
-  echo "Server handlers execute on separate worker threads."
-  echo "Nim ORC GC guarantees safe sharing of immutable data."
+if successes == total:
+  echo "[OK] All ", total, " concurrent requests served correctly"
+else:
+  echo "[FAIL] ", errors, " requests failed!"
 
-  server.close()
-  joinThread(serverThread)
+if errors == 0:
+  echo "[OK] No errors with ", numClientThreads, " concurrent clients"
+else:
+  echo "[FAIL] Errors detected — check thread safety"
 
-  if errors > 0:
-    quit(1)
+echo ""
+echo "=== Thread Safety Verification ==="
+echo "All threads share responseBody (ReadOnly) without data race."
+echo "Server handlers execute on separate worker threads."
+echo "Nim ORC GC guarantees safe sharing of immutable data."
 
-when isMainModule:
-  main()
+server.close()
+joinThread(serverThread)
+
+if errors > 0:
+  quit(1)

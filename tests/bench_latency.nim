@@ -11,27 +11,32 @@
 ##   P95 ≈ 12-15ms (compute + scheduling overhead)
 ##   P99 ≈ 20-30ms (compute + occasional contention)
 
-import hunos, std/os, std/times, std/strutils, std/algorithm, std/httpclient
+import hunos, std/os, std/times, std/strutils, std/algorithm
+from std/httpclient import newHttpClient, getContent, close
 import ./wrk_shared
 
 const
   numRequests = 1000
   computeMs = 10
 
-proc handler(request: Request) =
+proc handler(request: Request) {.gcsafe.} =
+  {.gcsafe.}:
+    let body = responseBody
   case request.uri:
   of "/":
     if request.httpMethod == "GET":
-      {.gcsafe.}:
-        sleep(computeMs)
-        var headers: HttpHeaders
-        headers["Content-Type"] = "text/plain"
-        headers["X-Server"] = "Hunos"
-        request.respond(200, headers, responseBody)
+      sleep(computeMs)
+      var headers: HttpHeaders
+      headers["Content-Type"] = "text/plain"
+      headers["X-Server"] = "Hunos"
+      request.respond(200, headers, body)
     else:
       request.respond(405)
   else:
     request.respond(404)
+
+proc serveProc(s: Server) {.thread.} =
+  s.serve(Port(8081))
 
 proc main() =
   echo "=== Hunos Latency Benchmark ==="
@@ -41,10 +46,8 @@ proc main() =
 
   let server = newServer(handler, workerThreads = 8)
 
-  var serverThread: Thread[void]
-  createThread(serverThread, proc() =
-    server.serve(Port(8081))
-  )
+  var serverThread: Thread[Server]
+  createThread(serverThread, serveProc, server)
 
   server.waitUntilReady()
 

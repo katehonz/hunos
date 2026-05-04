@@ -55,6 +55,7 @@ type
     clientId: uint64
     responded: bool
     responseHeaders*: HttpHeaders
+    userData*: pointer
 
   Request* = ptr RequestObj
 

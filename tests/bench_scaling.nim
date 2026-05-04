@@ -14,7 +14,8 @@
 ##     wrk -t4 -c100 -d10s http://localhost:8080
 ##   done
 
-import hunos, std/os, std/times, std/strutils, std/atomics, std/httpclient
+import hunos, std/os, std/times, std/strutils, std/atomics
+from std/httpclient import newHttpClient, getContent, close
 import ./wrk_shared
 
 const
@@ -24,68 +25,77 @@ const
 var totalRequests: Atomic[int64]
 var totalErrors: Atomic[int64]
 
-proc handler(request: Request) =
+proc handler(request: Request) {.gcsafe.} =
+  {.gcsafe.}:
+    let body = responseBody
   case request.uri:
   of "/":
     if request.httpMethod == "GET":
-      request.respond(200, body = responseBody)
+      request.respond(200, body = body)
     else:
       request.respond(405)
   of "/heavy":
     if request.httpMethod == "GET":
-      {.gcsafe.}:
-        sleep(10)  # Simulates 10ms AI inference
-        request.respond(200, body = responseBody)
+      sleep(10)  # Simulates 10ms AI inference
+      request.respond(200, body = body)
     else:
       request.respond(405)
   else:
     request.respond(404)
 
+type
+  ServerArgs = object
+    server: Server
+    port: int
+
+proc serveProc(args: ServerArgs) {.thread.} =
+  args.server.serve(Port(args.port))
+
+type
+  ClientArgs = object
+    port: int
+    startTime: float64
+
+proc clientProc(args: ClientArgs) {.thread, gcsafe.} =
+  var client = newHttpClient(timeout = 5000)
+  while true:
+    let now = epochTime()
+    if now - args.startTime >= benchDuration:
+      break
+    try:
+      let resp = client.getContent("http://127.0.0.1:" & $args.port & "/")
+      if resp.len > 0:
+        discard totalRequests.fetchAdd(1)
+      else:
+        discard totalErrors.fetchAdd(1)
+    except Exception:
+      discard totalErrors.fetchAdd(1)
+  client.close()
+
 proc runBenchmark(port: int, numWorkers: int): int64 =
   ## Starts server with given worker count, returns requests/sec.
   let server = newServer(handler, workerThreads = numWorkers)
 
-  var serverThread: Thread[void]
-  createThread(serverThread, proc() =
-    server.serve(Port(port))
-  )
+  var serverThread: Thread[ServerArgs]
+  createThread(serverThread, serveProc, ServerArgs(server: server, port: port))
 
   server.waitUntilReady()
 
   totalRequests.store(0)
   totalErrors.store(0)
 
-  let startTime = epochTime()
-  var requestCount: int64 = 0
-
-  var clientThreads: seq[Thread[void]]
   let numClients = 4
+  var clientThreads: array[4, Thread[ClientArgs]]
+  let benchStart = epochTime()
 
   for i in 0 ..< numClients:
-    var t: Thread[void]
-    createThread(t, proc() =
-      let client = newHttpClient(timeout = 5000)
-      while true:
-        let now = epochTime()
-        if now - startTime >= benchDuration:
-          break
-        try:
-          let resp = client.getContent("http://127.0.0.1:" & $port & "/")
-          if resp.len > 0:
-            totalRequests.fetchAdd(1)
-          else:
-            totalErrors.fetchAdd(1)
-        except Exception:
-          totalErrors.fetchAdd(1)
-      client.close()
-    )
-    clientThreads.add(t)
+    createThread(clientThreads[i], clientProc, ClientArgs(port: port, startTime: benchStart))
 
-  for t in clientThreads:
-    joinThread(t)
+  for i in 0 ..< numClients:
+    joinThread(clientThreads[i])
 
-  let elapsed = epochTime() - startTime
-  requestCount = totalRequests.load()
+  let elapsed = epochTime() - benchStart
+  let requestCount = totalRequests.load()
 
   server.close()
   joinThread(serverThread)
@@ -112,6 +122,8 @@ proc main() =
     let scaling = if baseline > 0: float64(rps) / float64(baseline) else: 0.0
     echo align($workers, 7), " | ", align($rps, 12), " | ",
          formatFloat(scaling, ffDecimal, 2), "x"
+
+    sleep(200)  # Allow OS to reclaim ports and threads
 
   echo ""
   echo "=== Analysis ==="
