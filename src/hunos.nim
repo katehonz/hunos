@@ -5,7 +5,7 @@ when not defined(nimdoc):
 when not compileOption("threads"):
   {.error: "Using --threads:on is required by Hunos.".}
 
-import hunos/common, hunos/internal, hunos/sha, hunos/compress
+import hunos/common, hunos/internal, hunos/sha, hunos/compress, hunos/h2
 import std/atomics, std/cpuinfo, std/deques, std/hashes,
     std/nativesockets, std/os, std/random,
     std/selectors, std/sets, std/tables, std/times
@@ -56,6 +56,7 @@ type
     responded: bool
     responseHeaders*: HttpHeaders
     userData*: pointer
+    h2StreamId*: uint32
 
   Request* = ptr RequestObj
 
@@ -135,6 +136,10 @@ type
       upgradedToWebSocket, closeFrameSent: bool
       sendsWaitingForUpgrade: seq[OutgoingBuffer]
       requestCounter: int
+      isH2: bool
+      h2Conn: H2Connection
+      h2PrefaceReceived: bool
+      h2FrameBuf: string
 
   IncomingRequestState = object
     headersParsed: bool
@@ -315,6 +320,42 @@ proc respond*(
       "Responding to a request that has already received a non-1xx response"
     )
 
+  if request.h2StreamId > 0:
+    var encodedResponse = OutgoingBuffer()
+    encodedResponse.clientSocket = request.clientSocket
+    encodedResponse.clientId = request.clientId
+    encodedResponse.closeConnection = false
+
+    for (k, v) in request.responseHeaders:
+      if k notin headers:
+        headers[k] = v
+
+    var actualBody = body
+    if actualBody.len > compressMinLen and "Content-Encoding" notin headers:
+      let acceptEncoding = request.headers["Accept-Encoding"]
+      if acceptEncoding.len > 0:
+        let (compressed, encoding) = compressBody(actualBody, acceptEncoding)
+        if encoding.len > 0:
+          actualBody = compressed
+          headers["Content-Encoding"] = encoding
+
+    let frames = encodeResponseFramesStandalone(request.h2StreamId, statusCode, headers, actualBody)
+    var combined = ""
+    for frame in frames:
+      combined &= frame
+    encodedResponse.buffer1 = combined
+
+    if statusCode < 100 or statusCode >= 200:
+      request.responded = true
+
+    var queueWasEmpty: bool
+    withLock request.server.responseQueueLock:
+      queueWasEmpty = request.server.responseQueue.len == 0
+      request.server.responseQueue.addLast(move encodedResponse)
+    if queueWasEmpty:
+      request.server.trigger(request.server.responseQueued)
+    return
+
   var encodedResponse = OutgoingBuffer()
   encodedResponse.clientSocket = request.clientSocket
   encodedResponse.clientId = request.clientId
@@ -361,6 +402,48 @@ proc respond*(
   encodedResponse.isWebSocketUpgrade = headers.headerContainsToken(
     "Upgrade", "websocket"
   )
+
+  if statusCode < 100 or statusCode >= 200:
+    request.responded = true
+
+  var queueWasEmpty: bool
+  withLock request.server.responseQueueLock:
+    queueWasEmpty = request.server.responseQueue.len == 0
+    request.server.responseQueue.addLast(move encodedResponse)
+
+  if queueWasEmpty:
+    request.server.trigger(request.server.responseQueued)
+
+proc respondH2*(
+  request: Request,
+  statusCode: int,
+  headers: sink HttpHeaders = @[],
+  body: sink string = "",
+  conn: var H2Connection
+) {.raises: [], gcsafe.} =
+  var encodedResponse = OutgoingBuffer()
+  encodedResponse.clientSocket = request.clientSocket
+  encodedResponse.clientId = request.clientId
+  encodedResponse.closeConnection = false
+
+  for (k, v) in request.responseHeaders:
+    if k notin headers:
+      headers[k] = v
+
+  if body.len > compressMinLen and "Content-Encoding" notin headers:
+    let acceptEncoding = request.headers["Accept-Encoding"]
+    if acceptEncoding.len > 0:
+      let (compressed, encoding) = compressBody(body, acceptEncoding)
+      if encoding.len > 0:
+        body = compressed
+        headers["Content-Encoding"] = encoding
+
+  let frames = encodeResponseFrames(conn, request.h2StreamId, statusCode, headers, body)
+  var combined = ""
+  for frame in frames:
+    combined &= frame
+
+  encodedResponse.buffer1 = combined
 
   if statusCode < 100 or statusCode >= 200:
     request.responded = true
@@ -701,11 +784,236 @@ proc popRequest(
   if dataEntry.bytesReceived > 0:
     server.log(DebugLevel, "Receive buffer not empty after request")
 
+proc popH2Request(
+  server: Server,
+  clientSocket: SocketHandle,
+  dataEntry: DataEntry,
+  streamId: uint32,
+  h2Headers: seq[(string, string)],
+  h2Body: string
+): Request {.raises: [].} =
+  result = cast[Request](allocShared0(sizeof(RequestObj)))
+  result.server = server
+  result.clientSocket = clientSocket
+  result.clientId = dataEntry.clientId
+  result.remoteAddress = dataEntry.remoteAddress
+  result.httpVersion = Http11
+  result.h2StreamId = streamId
+  result.headers = @[]
+
+  for (k, v) in h2Headers:
+    case k
+    of ":method": result.httpMethod = v
+    of ":path":
+      try:
+        let parsed = parseUrl(v)
+        result.path = parsed.path
+        result.uri = v
+        result.queryParams = parsed.query
+      except Exception:
+        result.path = v
+        result.uri = v
+    of ":authority":
+      result.headers.add(("Host", v))
+    of ":scheme":
+      discard
+    else:
+      result.headers.add((k, v))
+
+  result.body = h2Body
+  inc dataEntry.requestCounter
+
+proc sendH2Settings(server: Server, clientSocket: SocketHandle, conn: var H2Connection, clientId: uint64) {.raises: [].} =
+  var settings: seq[(SettingsParam, uint32)] = @[]
+  settings.add((spInitialWindowSize, 65535'u32))
+  settings.add((spMaxConcurrentStreams, 100'u32))
+  settings.add((spMaxFrameSize, 16384'u32))
+  let payload = encodeSettingsPayload(settings)
+  let frame = Frame(
+    frameType: ftSettings,
+    flags: 0,
+    streamId: 0,
+    payload: payload
+  )
+  var encodedResponse = OutgoingBuffer()
+  encodedResponse.clientSocket = clientSocket
+  encodedResponse.clientId = clientId
+  encodedResponse.closeConnection = false
+  encodedResponse.buffer1 = encodeFrame(frame)
+  var queueWasEmpty: bool
+  withLock server.responseQueueLock:
+    queueWasEmpty = server.responseQueue.len == 0
+    server.responseQueue.addLast(move encodedResponse)
+  if queueWasEmpty:
+    server.trigger(server.responseQueued)
+
+proc sendH2SettingsAck(server: Server, clientSocket: SocketHandle, clientId: uint64) {.raises: [].} =
+  let frame = Frame(
+    frameType: ftSettings,
+    flags: uint8(ffAck),
+    streamId: 0,
+    payload: ""
+  )
+  var encodedResponse = OutgoingBuffer()
+  encodedResponse.clientSocket = clientSocket
+  encodedResponse.clientId = clientId
+  encodedResponse.closeConnection = false
+  encodedResponse.buffer1 = encodeFrame(frame)
+  var queueWasEmpty: bool
+  withLock server.responseQueueLock:
+    queueWasEmpty = server.responseQueue.len == 0
+    server.responseQueue.addLast(move encodedResponse)
+  if queueWasEmpty:
+    server.trigger(server.responseQueued)
+
+proc sendH2Goaway(server: Server, clientSocket: SocketHandle, lastStreamId: uint32, errorCode: ErrorCode) {.raises: [].} =
+  let frame = makeGoawayFrame(lastStreamId, errorCode)
+  var encodedResponse = OutgoingBuffer()
+  encodedResponse.clientSocket = clientSocket
+  encodedResponse.clientId = 0
+  encodedResponse.closeConnection = true
+  encodedResponse.buffer1 = encodeFrame(frame)
+  var queueWasEmpty: bool
+  withLock server.responseQueueLock:
+    queueWasEmpty = server.responseQueue.len == 0
+    server.responseQueue.addLast(move encodedResponse)
+  if queueWasEmpty:
+    server.trigger(server.responseQueued)
+
+proc afterRecvH2(
+  server: Server,
+  clientSocket: SocketHandle,
+  dataEntry: DataEntry
+): bool {.raises: [].} =
+  var pos = 0
+  while pos + frameHeaderLen <= dataEntry.bytesReceived:
+    let (frame, consumed) = parseFrame(
+      dataEntry.recvBuf.toOpenArray(pos, dataEntry.bytesReceived - 1)
+    )
+    if consumed <= 0:
+      break
+    if consumed < 0:
+      server.log(DebugLevel, "H2: Invalid frame")
+      return true
+
+    case frame.frameType
+    of ftSettings:
+      if (frame.flags and uint8(ffAck)) != 0:
+        discard
+      else:
+        let settings = parseSettingsPayload(frame.payload)
+        dataEntry.h2Conn.applySettings(settings)
+        server.sendH2SettingsAck(clientSocket, dataEntry.clientId)
+    of ftHeaders:
+      let headers = parseHeadersPayload(dataEntry.h2Conn, frame)
+      dataEntry.h2Conn.getOrCreateStream(frame.streamId)
+      dataEntry.h2Conn.streamRef(frame.streamId).headers = headers
+      dataEntry.h2Conn.streamRef(frame.streamId).state = ssOpen
+      if (frame.flags and uint8(ffEndStream)) != 0:
+        dataEntry.h2Conn.streamRef(frame.streamId).endStream = true
+      if (frame.flags and uint8(ffEndHeaders)) != 0:
+        dataEntry.h2Conn.streamRef(frame.streamId).endHeaders = true
+        if dataEntry.h2Conn.streamRef(frame.streamId).endStream:
+          let request = server.popH2Request(
+            clientSocket, dataEntry, frame.streamId,
+            dataEntry.h2Conn.streamRef(frame.streamId).headers,
+            ""
+          )
+          server.postTask(WorkerTask(request: request))
+    of ftData:
+      if frame.streamId in dataEntry.h2Conn.streams:
+        dataEntry.h2Conn.streamRef(frame.streamId).body &= frame.payload
+        if (frame.flags and uint8(ffEndStream)) != 0:
+          dataEntry.h2Conn.streamRef(frame.streamId).endStream = true
+          if dataEntry.h2Conn.streamRef(frame.streamId).endHeaders:
+            let request = server.popH2Request(
+              clientSocket, dataEntry, frame.streamId,
+              dataEntry.h2Conn.streamRef(frame.streamId).headers,
+              dataEntry.h2Conn.streamRef(frame.streamId).body
+            )
+            server.postTask(WorkerTask(request: request))
+    of ftPing:
+      if (frame.flags and uint8(ffAck)) == 0:
+        var resp = Frame(
+          frameType: ftPing,
+          flags: uint8(ffAck),
+          streamId: 0,
+          payload: frame.payload
+        )
+        var encodedResponse = OutgoingBuffer()
+        encodedResponse.clientSocket = clientSocket
+        encodedResponse.clientId = dataEntry.clientId
+        encodedResponse.closeConnection = false
+        encodedResponse.buffer1 = encodeFrame(resp)
+        var queueWasEmpty: bool
+        withLock server.responseQueueLock:
+          queueWasEmpty = server.responseQueue.len == 0
+          server.responseQueue.addLast(move encodedResponse)
+        if queueWasEmpty:
+          server.trigger(server.responseQueued)
+    of ftWindowUpdate:
+      let increment = ((frame.payload[0].uint32 and 0x7F) shl 24) or
+                      (frame.payload[1].uint32 shl 16) or
+                      (frame.payload[2].uint32 shl 8) or
+                      frame.payload[3].uint32
+      if frame.streamId == 0:
+        dataEntry.h2Conn.sendWindow += increment.int32
+      elif frame.streamId in dataEntry.h2Conn.streams:
+        dataEntry.h2Conn.streamRef(frame.streamId).windowSize += increment.int32
+    of ftRstStream:
+      if frame.streamId in dataEntry.h2Conn.streams:
+        dataEntry.h2Conn.closeStream(frame.streamId)
+    of ftGoaway:
+      dataEntry.h2Conn.goawayReceived = true
+      return true
+    else:
+      discard
+
+    pos += consumed
+
+  if pos > 0 and pos < dataEntry.bytesReceived:
+    copyMem(
+      dataEntry.recvBuf[0].addr,
+      dataEntry.recvBuf[pos].addr,
+      dataEntry.bytesReceived - pos
+    )
+    dataEntry.bytesReceived -= pos
+  elif pos >= dataEntry.bytesReceived:
+    dataEntry.bytesReceived = 0
+
+  return false
+
 proc afterRecvHttp(
   server: Server,
   clientSocket: SocketHandle,
   dataEntry: DataEntry
 ): bool {.raises: [].} =
+  if not dataEntry.isH2 and not dataEntry.requestState.headersParsed:
+    if dataEntry.bytesReceived >= 24:
+      var isH2c = true
+      {.gcsafe.}:
+        for i in 0 ..< 24:
+          if dataEntry.recvBuf[i] != connectionPreface[i]:
+            isH2c = false
+            break
+      if isH2c:
+        dataEntry.isH2 = true
+        dataEntry.h2Conn = newH2Connection()
+        dataEntry.h2PrefaceReceived = true
+        server.log(DebugLevel, "H2C connection detected")
+        server.sendH2Settings(clientSocket, dataEntry.h2Conn, dataEntry.clientId)
+        dataEntry.bytesReceived -= 24
+        if dataEntry.bytesReceived > 0:
+          copyMem(
+            dataEntry.recvBuf[0].addr,
+            dataEntry.recvBuf[24].addr,
+            dataEntry.bytesReceived
+          )
+        return server.afterRecvH2(clientSocket, dataEntry)
+
+  if dataEntry.isH2:
+    return server.afterRecvH2(clientSocket, dataEntry)
+
   if dataEntry.requestCounter > 0 and
     not dataEntry.requestState.loggedUnexpectedData:
     server.log(
