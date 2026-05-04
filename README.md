@@ -10,6 +10,19 @@ Hunos is built on the proven single-IO-thread + worker-pool architecture, with s
 
 ---
 
+### What's New in v1.3.0
+
+- **NimMax-style Context API** — `hunos/context` wraps Request/Response with typed helpers
+- **Session management** — thread-safe in-memory store with signed-cookie backend
+- **CSRF protection** — token middleware with `csrfTokenInput()` helper
+- **Form validation** — 15+ validators (`required`, `isEmail`, `minLength`, etc.)
+- **Testing utilities** — `mockServer()`, `runOnce()`, `debugResponse()`
+- **OpenAPI/Swagger** — spec generator with built-in Swagger UI middleware
+- **HTTP/2 (h2c)** — frame parser, HPACK, stream multiplexing
+- **Basic auth middleware** — `basicAuthMiddleware()` with custom verify handler
+- **JSON body middleware** — automatic JSON parsing with `getJsonBody()`
+- **SIGSEGV fix** — `bench_scaling` stable at 32 workers under ORC
+
 ### What's New in v1.2.0
 
 - **Partial wildcard `*` in router** — `/api/*.json`, `/page_*`, `/*/data`, `*something*`
@@ -32,6 +45,13 @@ Hunos is built on the proven single-IO-thread + worker-pool architecture, with s
 - [Multipart Form Parsing](#multipart-form-parsing)
 - [Static File Serving](#static-file-serving)
 - [Rate Limiting](#rate-limiting)
+- [Context API](#context-api)
+- [Sessions](#sessions)
+- [CSRF Protection](#csrf-protection)
+- [Form Validation](#form-validation)
+- [Testing Utilities](#testing-utilities)
+- [OpenAPI / Swagger](#openapi--swagger)
+- [HTTP/2 Support](#http2-support)
 - [Benchmarks](#benchmarks)
 - [Building](#building)
 - [Testing](#testing)
@@ -507,6 +527,198 @@ limiter.close()
 
 **Automatic cleanup:** Expired IP entries are cleaned up in-place every 10,000 `isAllowed()` calls — no manual `cleanup()` needed in normal operation. The `cleanup()` proc remains available for explicit forced cleanup. Call `limiter.close()` to release the lock when the limiter is no longer needed.
 
+## Context API
+
+The `hunos/context` module provides a NimMax-style `Context` wrapper around Hunos `Request`/`Response`:
+
+```nim
+import hunos/context
+
+proc handler(request: Request) {.gcsafe.} =
+  let ctx = newContext(request)
+  let id = ctx.getInt("id")
+  if id.isSome:
+    ctx.json(%*{"id": id.get})
+  else:
+    ctx.text("Invalid ID", 400)
+```
+
+### Context Helpers
+
+| Helper | Description |
+|--------|-------------|
+| `getInt(key, source)` | Typed path/query param → `Option[int]` |
+| `getFloat(key, source)` | Typed path/query param → `Option[float]` |
+| `getBool(key, source)` | Typed path/query param → `Option[bool]` |
+| `getJsonBody()` | Parse JSON body → `JsonNode` |
+| `session()` | Access session from request |
+| `html(body, code)` | Respond with HTML |
+| `text(body, code)` | Respond with plain text |
+| `json(data, code)` | Respond with JSON |
+| `redirect(url, code)` | Respond with redirect |
+| `getCookie(name)` | Read cookie value |
+| `setCookie(...)` | Set response cookie |
+
+---
+
+## Sessions
+
+Thread-safe session management with two backends:
+
+```nim
+import hunos, hunos/sessions
+
+var store = newSessionStore(maxAge = 3600)
+
+proc handler(request: Request) {.gcsafe.} =
+  let session = request.getSession()
+  session.set("user", "alice")
+  let user = session.get("user")
+  request.respond(200, body = "Hello, " & user)
+
+var stack = newMiddlewareStack(router)
+stack.use(sessionMiddleware(store))
+```
+
+### Flash Messages
+
+One-time read messages stored in session:
+
+```nim
+session.flash("Welcome back!", flSuccess)
+let msgs = session.getFlashedMsgs()  # auto-clears after read
+```
+
+### Signed Cookie Backend
+
+Cryptographically signed cookies (HMAC-SHA256) survive server restarts:
+
+```nim
+let secret = newSecretKey("my-secret")
+let signedStore = newSessionStore()
+stack.use(signedCookieMiddleware(secret, signedStore))
+```
+
+---
+
+## CSRF Protection
+
+Token-based CSRF middleware with automatic validation:
+
+```nim
+import hunos/csrf
+
+var stack = newMiddlewareStack(router)
+stack.use(sessionMiddleware(store))
+stack.use(csrfMiddleware())
+
+# In HTML forms:
+let token = request.csrfTokenInput()  # returns `<input type="hidden" ...>`
+```
+
+Unsafe methods (POST, PUT, DELETE, PATCH) are blocked without a valid token.
+
+---
+
+## Form Validation
+
+Ported from NimMax with 15+ validators:
+
+```nim
+import hunos/validation
+
+var validator = newFormValidator()
+validator.addRule("email", required())
+validator.addRule("email", isEmail())
+validator.addRule("age", isInt())
+validator.addRule("age", minValue(18))
+
+let errors = validator.validate(params)
+# errors: Table[string, seq[string]]
+```
+
+### Available Validators
+
+| Validator | Description |
+|-----------|-------------|
+| `required()` | Field must be non-empty |
+| `isInt()` | Parseable integer |
+| `isFloat()` | Parseable float |
+| `isEmail()` | Email format |
+| `minLength(n)` | Minimum string length |
+| `maxLength(n)` | Maximum string length |
+| `minValue(n)` | Minimum numeric value |
+| `maxValue(n)` | Maximum numeric value |
+| `matchPattern(re)` | Regex match |
+| `oneOf(list)` | Value in allowed list |
+| `notEmpty()` | Non-empty string |
+| `isAlpha()` | Alphabetic only |
+| `isAlphanumeric()` | Alphanumeric only |
+| `isHex()` | Hexadecimal string |
+| `isUUID()` | UUID format |
+| `isDate()` | Date format |
+| `isIP()` | IPv4 or IPv6 address |
+
+---
+
+## Testing Utilities
+
+Test handlers without running a server:
+
+```nim
+import hunos/testing
+
+let server = mockServer()
+let response = server.runOnce("GET", "/api")
+assert response.code == 200
+assert response.body == "..."
+```
+
+| Helper | Description |
+|--------|-------------|
+| `mockServer()` | Create server without socket |
+| `runOnce(method, path, body, headers)` | Execute handler synchronously |
+| `debugResponse(response)` | Pretty-print response for debugging |
+
+---
+
+## OpenAPI / Swagger
+
+Generate OpenAPI 3.0 specs from your router:
+
+```nim
+import hunos/openapi
+
+var spec = newOpenApiSpec("My API", "Description", "1.0.0")
+spec.addPath("/users", "get", "List users", tags = @["users"])
+spec.addParameter("/users", "limit", "query", false, "integer")
+spec.addResponse("/users", 200, "OK", "application/json", "UserList")
+
+# Serve Swagger UI at /docs
+stack.use(serveDocs(spec, "/docs"))
+```
+
+---
+
+## HTTP/2 Support
+
+Experimental HTTP/2 over cleartext (h2c) is available:
+
+```nim
+import hunos/h2
+
+# The server automatically negotiates HTTP/2 via Upgrade header
+# or you can force HTTP/2 with the h2c protocol.
+```
+
+Supported features:
+- Frame parser (HEADERS, DATA, SETTINGS, PING, GOAWAY)
+- HPACK header compression
+- Stream multiplexing
+- Server push (experimental)
+
+---
+
 ## Benchmarks
 
 ### wrk Benchmark
@@ -630,32 +842,51 @@ hunos/
 │   └── hunos/
 │       ├── common.nim          # Error types, log levels, PathParams
 │       ├── compress.nim        # gzip/deflate compression (wraps zippy)
+│       ├── context.nim         # NimMax-style Context API
+│       ├── csrf.nim            # CSRF token middleware
+│       ├── h2.nim              # HTTP/2 frame parser + HPACK
 │       ├── internal.nim        # HttpHeaders, encoding, parsing helpers
+│       ├── middleware.nim      # Middleware pipeline + built-in middleware
 │       ├── multipart.nim       # multipart/form-data parser
+│       ├── openapi.nim         # OpenAPI 3.0 spec generator
 │       ├── router.nim          # Trie-based router
-│       ├── middleware.nim       # Middleware pipeline + built-in middleware
+│       ├── sessions.nim        # Session store + flash messages + signed cookies
 │       ├── sha.nim             # SHA1 + Base64 (for WebSocket handshake)
 │       ├── ratelimit.nim       # Sliding-window rate limiter
-│       └── staticfiles.nim     # Static file serving with MIME detection
+│       ├── staticfiles.nim     # Static file serving with MIME detection
+│       ├── testing.nim         # Test helpers (mockServer, runOnce)
+│       └── validation.nim      # Form validators
 ├── examples/
 │   ├── basic.nim
+│   ├── middleware_example.nim
+│   ├── nimmax_hunos.nim        # NimMax-style adapter example
 │   ├── router_example.nim
-│   ├── websocket_example.nim
-│   └── middleware_example.nim
+│   └── websocket_example.nim
 ├── tests/
-│   ├── test_core.nim           # SHA1, Base64, headers, path params, router
-│   ├── test_router.nim         # Router edge cases (10 tests)
-│   ├── test_middleware.nim      # Middleware pipeline (6 tests)
-│   ├── test_ratelimit.nim      # Rate limiter (5 tests)
-│   ├── test_staticfiles.nim    # Static files (8 tests)
-│   ├── test_multipart.nim      # Multipart parsing (7 tests)
+│   ├── test_auth.nim           # Basic auth middleware
 │   ├── test_concurrent.nim     # Concurrency correctness
+│   ├── test_context.nim        # Context API
+│   ├── test_core.nim           # SHA1, Base64, headers, path params, router
+│   ├── test_csrf.nim           # CSRF protection
+│   ├── test_h2.nim             # HTTP/2 frame parser
+│   ├── test_h2_integration.nim # HTTP/2 end-to-end
+│   ├── test_jsonbody.nim       # JSON body middleware
+│   ├── test_middleware.nim     # Middleware pipeline
+│   ├── test_multipart.nim      # Multipart parsing
+│   ├── test_openapi.nim        # OpenAPI spec generation
+│   ├── test_ratelimit.nim      # Rate limiter
+│   ├── test_router.nim         # Router edge cases
+│   ├── test_sessions.nim       # Sessions + flash + signed cookies
+│   ├── test_staticfiles.nim    # Static files
+│   ├── test_testing.nim        # Testing utilities
+│   ├── test_validation.nim     # Form validation
 │   ├── bench_scaling.nim       # Throughput scaling benchmark
 │   ├── bench_latency.nim       # Latency percentile benchmark
 │   ├── bench_memory.nim        # Memory sharing benchmark (MoE)
 │   ├── wrk_hunos.nim           # wrk load generator target
 │   ├── wrk_asynchttpserver.nim # wrk comparison target
 │   └── wrk_shared.nim          # Shared constants
+├── docs/                       # Module documentation
 ├── hunos.nimble
 ├── config.nims
 ├── CODE_REVIEW.md
