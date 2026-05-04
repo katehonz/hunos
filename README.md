@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](hunos.nimble)
 
-High-performance, multi-threaded HTTP/1.1 and WebSocket server for Nim.
+High-performance, multi-threaded HTTP/1.1, HTTP/2 and WebSocket server for Nim.
 
 Hunos is built on the proven single-IO-thread + worker-pool architecture, with significant improvements over [Mummy](https://github.com/guzba/mummy) in routing performance, developer ergonomics, and built-in features.
 
