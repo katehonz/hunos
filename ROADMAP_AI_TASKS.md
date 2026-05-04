@@ -16,7 +16,7 @@
 
 ## Фаза A: Бързи победи (1-2 часа задача)
 
-### A1. Fix deprecated `std/md5` warning
+### ✅ A1. Fix deprecated `std/md5` warning (ГОТОВО)
 **Файлове:** `src/hunos/staticfiles.nim`
 **Проблем:** Компилацията вади warning: `use command nimble install checksums and import checksums/md5 instead; md5 is deprecated`
 **Решение:**
@@ -29,7 +29,7 @@ nimble install checksums
 
 ---
 
-### A2. Add `jsonBodyMiddleware` за Hunos
+### ✅ A2. Add `jsonBodyMiddleware` за Hunos (ГОТОВО)
 **Файлове:** `src/hunos/jsonbody.nim` (нов), `tests/test_jsonbody.nim` (нов)
 **Описание:** Създай middleware, който автоматично парсира JSON body и го закача на `request.userData`.
 ```nim
@@ -49,7 +49,7 @@ proc jsonBodyMiddleware*: MiddlewareProc =
 
 ---
 
-### A3. Add `notFoundHandler` и `methodNotAllowedHandler` в Router
+### ✅ A3. Add `notFoundHandler` и `methodNotAllowedHandler` в Router (ГОТОВО)
 **Файлове:** `src/hunos/router.nim`, `tests/test_router.nim`
 **Описание:** Router-ът вече има `notFoundHandler` и `methodNotAllowedHandler` полета, но те не се използват в `toHandler()`. Поправи `toHandler()` да ги извиква вместо default отговори.
 **Тест:** Създай router с custom `notFoundHandler`, изпрати заявка към несъществуващ път → трябва да получиш custom отговор.
@@ -57,7 +57,7 @@ proc jsonBodyMiddleware*: MiddlewareProc =
 
 ---
 
-### A4. Add `Request.getHeader(key: string): string` helper
+### ✅ A4. Add `Request.getHeader(key: string): string` helper (ГОТОВО)
 **Файлове:** `src/hunos.nim`, `tests/test_core.nim`
 **Описание:** Добави удобен метод за достъп до headers с default стойност (като в NimMax).
 ```nim
@@ -71,7 +71,7 @@ proc getHeader*(request: Request, key: string, default = ""): string =
 
 ---
 
-### A5. Cleanup Bulgarian comments in benchmarks
+### ✅ A5. Cleanup Bulgarian comments in benchmarks (ГОТОВО)
 **Файлове:** `tests/bench_scaling.nim`, `tests/bench_latency.nim`, `tests/bench_memory.nim`
 **Описание:** Замени всички коментари на български с английски (споменато в CODE_REVIEW.md).
 **Тест:** Няма (purely documentation).
@@ -81,7 +81,7 @@ proc getHeader*(request: Request, key: string, default = ""): string =
 
 ## Фаза B: Средни задачи (4-8 часа задача)
 
-### B1. Port Form Validation от NimMax
+### ✅ B1. Port Form Validation от NimMax (ГОТОВО)
 **Файлове:** `src/hunos/validation.nim` (нов), `tests/test_validation.nim` (нов)
 **Входна точка:** Погледни `nimmax/src/nimmax/validation/validators.nim` за референца.
 **Изисквания:**
@@ -94,7 +94,7 @@ proc getHeader*(request: Request, key: string, default = ""): string =
 
 ---
 
-### B2. Add Flash Messages към Sessions
+### ✅ B2. Add Flash Messages към Sessions (ГОТОВО)
 **Файлове:** `src/hunos/sessions.nim`, `tests/test_sessions.nim`
 **Изисквания:**
 ```nim
@@ -110,7 +110,7 @@ type FlashLevel* = enum flInfo, flWarning, flError, flSuccess
 
 ---
 
-### B3. Add Testing Utilities (`mockApp`, `runOnce`)
+### ✅ B3. Add Testing Utilities (`mockApp`, `runOnce`) (ГОТОВО)
 **Файлове:** `src/hunos/testing.nim` (нов), `tests/test_testing.nim` (нов)
 **Входна точка:** Погледни `nimmax/src/nimmax/testing/mocking.nim` за референца.
 **Изисквания:**
@@ -122,7 +122,7 @@ type FlashLevel* = enum flInfo, flWarning, flError, flSuccess
 
 ---
 
-### B4. Add `serveStaticFile` middleware
+### ✅ B4. Add `serveStaticFile` middleware (ГОТОВО)
 **Файлове:** `src/hunos/staticfiles.nim`, `tests/test_staticfiles.nim`
 **Изисквания:**
 - `proc staticFileMiddleware*(rootDir: string, urlPrefix = ""): MiddlewareProc`
@@ -134,7 +134,7 @@ type FlashLevel* = enum flInfo, flWarning, flError, flSuccess
 
 ---
 
-### B5. Add `basicAuthMiddleware`
+### ✅ B5. Add `basicAuthMiddleware` (ГОТОВО)
 **Файлове:** `src/hunos/middleware.nim` или `src/hunos/auth.nim` (нов), `tests/test_auth.nim` (нов)
 **Изисквания:**
 ```nim
@@ -151,7 +151,7 @@ proc basicAuthMiddleware*(realm: string, verifyHandler: VerifyHandler): Middlewa
 
 ## Фаза C: Сложни задачи (8-16 часа, но ясно дефинирани)
 
-### C1. Fix `bench_scaling` SIGSEGV
+### ✅ C1. Fix `bench_scaling` SIGSEGV (ГОТОВО)
 **Файлове:** `src/hunos.nim` (core), `tests/bench_scaling.nim`
 **Проблем:** При многократен рестарт на сървър (16/32 workers), `bench_scaling` пада с SIGSEGV.
 **Диагностика:**
@@ -172,7 +172,7 @@ nim c --threads:on --mm:orc -d:release --path:src -r tests/bench_scaling.nim
 
 ---
 
-### C2. Add OpenAPI Spec Generator
+### ✅ C2. Add OpenAPI Spec Generator (ГОТОВО)
 **Файлове:** `src/hunos/openapi.nim` (нов), `tests/test_openapi.nim` (нов)
 **Входна точка:** Погледни `nimmax/src/nimmax/openapi/openapi.nim` за референца.
 **Изисквания:**
@@ -187,7 +187,7 @@ nim c --threads:on --mm:orc -d:release --path:src -r tests/bench_scaling.nim
 
 ---
 
-### C3. Add Signed Cookie Session Backend
+### ✅ C3. Add Signed Cookie Session Backend (ГОТОВО)
 **Файлове:** `src/hunos/sessions.nim`, `tests/test_sessions.nim`
 **Изисквания:**
 - Нов `SessionBackend` enum стойност: `sbSignedCookie`
@@ -207,7 +207,7 @@ proc sessionMiddleware*(
 
 ---
 
-### C4. Add HTTP/2 Support (Experimental)
+### ✅ C4. Add HTTP/2 Support (Experimental) (ГОТОВО)
 **Файлове:** `src/hunos.nim` (core)
 **Изисквания:**
 - ALPN negotiation при TLS handshake
@@ -222,7 +222,7 @@ proc sessionMiddleware*(
 
 ## Фаза D: Интеграция с NimMax (изисква познаване и на двата проекта)
 
-### D1. Създай `nimmax_hunos.nim` adapter
+### ✅ D1. Създай `nimmax_hunos.nim` adapter (ГОТОВО)
 **Файлове:** `examples/nimmax_hunos.nim` (нов)
 **Изисквания:**
 - Hunos server, който обработва NimMax routes

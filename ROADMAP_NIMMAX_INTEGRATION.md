@@ -101,10 +101,10 @@ test_staticfiles ✓
 
 | Задача | Сложност | Отговорник | Приоритет |
 |--------|----------|------------|-----------|
-| 🔴 **Fix `bench_scaling` SIGSEGV** | Висока | TBD | **Критичен** |
-| 🟡 Премахни `std/md5` deprecated warning | Ниска | TBD | Нисък |
-| 🟡 Добави `close()` за `RateLimiter` | Ниска | TBD | Нисък |
-| 🟢 Документация за новите модули | Средна | TBD | Среден |
+| ✅ Fix `bench_scaling` SIGSEGV | Висока | AI | **Критичен** |
+| ✅ Премахни `std/md5` deprecated warning | Ниска | AI | Нисък |
+| ✅ Добави `close()` за `RateLimiter` | Ниска | AI | Нисък |
+| ✅ Документация за новите модули | Средна | AI | Среден |
 
 **Детайли за SIGSEGV fix:**
 - Възпроизвежда се: `nim c --threads:on --mm:orc -d:release -r tests/bench_scaling.nim`
