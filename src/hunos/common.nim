@@ -1,4 +1,4 @@
-import std/typetraits
+import std/typetraits, std/options, std/strutils
 
 type
   HunosError* = object of CatchableError
@@ -38,6 +38,27 @@ proc contains*(pathParams: PathParams, key: string): bool =
 
 proc getOrDefault*(pathParams: PathParams, key, default: string): string =
   if key in pathParams: pathParams[key] else: default
+
+proc getInt*(pathParams: PathParams, key: string): Option[int] =
+  try:
+    result = some(parseInt(pathParams[key]))
+  except ValueError:
+    result = none(int)
+
+proc getFloat*(pathParams: PathParams, key: string): Option[float] =
+  try:
+    result = some(parseFloat(pathParams[key]))
+  except ValueError:
+    result = none(float)
+
+proc getBool*(pathParams: PathParams, key: string): Option[bool] =
+  let val = pathParams[key].toLowerAscii()
+  if val == "true" or val == "1" or val == "yes" or val == "on":
+    result = some(true)
+  elif val == "false" or val == "0" or val == "no" or val == "off":
+    result = some(false)
+  else:
+    result = none(bool)
 
 proc echoLogger*(level: LogLevel, args: varargs[string]) =
   if args.len == 1:

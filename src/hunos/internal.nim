@@ -4,7 +4,13 @@ template currentExceptionAsHunosError*(): untyped =
   let e = getCurrentException()
   newException(HunosError, e.getStackTrace & e.msg, e)
 
-type HttpHeaders* = seq[(string, string)]
+type
+  HttpHeaders* = seq[(string, string)]
+
+  Response* = object
+    code*: int
+    headers*: HttpHeaders
+    body*: string
 
 proc `[]`*(headers: HttpHeaders, key: string): string =
   for (k, v) in headers:

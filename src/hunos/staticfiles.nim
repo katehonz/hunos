@@ -1,4 +1,5 @@
-import std/os, std/strutils, std/times
+import std/os, std/strutils, std/times, std/md5
+import ../hunos
 
 type
   StaticConfig* = object
@@ -49,6 +50,43 @@ proc decodeUrlPath(path: string): string =
       inc o
       inc i
   result.setLen(o)
+
+proc generateETag*(filePath: string): string =
+  try:
+    let info = getFileInfo(filePath)
+    let tag = $getMD5($info.lastWriteTime & $info.size)
+    result = "\"" & tag & "\""
+  except Exception:
+    result = ""
+
+proc parseRangeHeader*(rangeHeader: string, fileSize: int): (bool, int, int) =
+  result = (false, 0, fileSize - 1)
+  if not rangeHeader.startsWith("bytes="):
+    return
+  let rangeVal = rangeHeader[6..^1]
+  let dashPos = rangeVal.find('-')
+  if dashPos == -1:
+    return
+  var startStr = rangeVal[0..<dashPos].strip()
+  var endStr = rangeVal[dashPos+1..^1].strip()
+  var startByte, endByte: int
+  try:
+    if startStr.len > 0:
+      startByte = parseInt(startStr)
+    else:
+      startByte = fileSize - parseInt(endStr)
+      endByte = fileSize - 1
+      result = (true, startByte, endByte)
+      return
+    if endStr.len > 0:
+      endByte = parseInt(endStr)
+    else:
+      endByte = fileSize - 1
+  except ValueError:
+    return
+  if startByte < 0 or startByte >= fileSize or endByte >= fileSize or startByte > endByte:
+    return
+  result = (true, startByte, endByte)
 
 proc guessContentType*(ext: string): string =
   case ext.toLowerAscii()
@@ -111,3 +149,53 @@ proc serveFile*(config: StaticConfig, urlPath: string): FileEntry =
     content: readFile(filePath),
     lastModified: getLastModificationTime(filePath).toUnixFloat()
   )
+
+proc serveStaticFile*(config: StaticConfig, request: Request) =
+  let entry = serveFile(config, request.path)
+  if entry.filePath.len == 0:
+    request.respond(404)
+    return
+
+  let etag = generateETag(entry.filePath)
+  let ifNoneMatch = request.headers["If-None-Match"]
+  let ifModifiedSince = request.headers["If-Modified-Since"]
+
+  if ifNoneMatch.len > 0 and ifNoneMatch == etag:
+    var headers: HttpHeaders
+    headers["ETag"] = etag
+    request.respond(304, headers)
+    return
+
+  if ifModifiedSince.len > 0:
+    try:
+      let modTime = format(utc(fromUnixFloat(entry.lastModified)), "ddd, dd MMM yyyy HH:mm:ss 'GMT'")
+      if ifModifiedSince == modTime:
+        var headers: HttpHeaders
+        headers["Last-Modified"] = modTime
+        request.respond(304, headers)
+        return
+    except Exception:
+      discard
+
+  let fileSize = entry.content.len
+  var headers: HttpHeaders
+  headers["Content-Type"] = entry.contentType
+  headers["ETag"] = etag
+  try:
+    headers["Last-Modified"] = format(utc(fromUnixFloat(entry.lastModified)), "ddd, dd MMM yyyy HH:mm:ss 'GMT'")
+  except Exception:
+    discard
+  if config.maxAge > 0:
+    headers["Cache-Control"] = "max-age=" & $config.maxAge
+
+  let rangeHeader = request.headers["Range"]
+  var (hasRange, startByte, endByte) = parseRangeHeader(rangeHeader, fileSize)
+
+  if hasRange:
+    let rangeLen = endByte - startByte + 1
+    headers["Content-Range"] = "bytes " & $startByte & "-" & $endByte & "/" & $fileSize
+    headers["Content-Length"] = $rangeLen
+    request.respond(206, headers, entry.content[startByte .. endByte])
+  else:
+    headers["Content-Length"] = $fileSize
+    request.respond(200, headers, entry.content)

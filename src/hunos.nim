@@ -293,6 +293,19 @@ proc respond*(
   statusCode: int,
   headers: sink HttpHeaders = @[],
   body: sink string = ""
+) {.raises: [], gcsafe.}
+
+proc respond*(
+  request: Request,
+  response: sink Response
+) {.raises: [], gcsafe.} =
+  request.respond(response.code, response.headers, response.body)
+
+proc respond*(
+  request: Request,
+  statusCode: int,
+  headers: sink HttpHeaders = @[],
+  body: sink string = ""
 ) {.raises: [], gcsafe.} =
   if request.responded:
     request.server.log(
@@ -1248,6 +1261,26 @@ proc loopForever(server: Server) {.raises: [IOSelectorsException].} =
         websocket.postWebSocketUpdate(close)
 {.pop.}
 
+proc close*(server: Server) {.raises: [], gcsafe.}
+
+proc shutdown*(server: Server, timeout: int = 30) {.raises: [], gcsafe.} =
+  server.serving.store(false)
+  if server.socket.int != 0:
+    try:
+      server.socket.close()
+    except Exception:
+      discard
+    server.socket = osInvalidSocket
+  let deadline = epochTime() + timeout.float
+  while epochTime() < deadline:
+    var empty: bool
+    withLock server.taskQueueLock:
+      empty = server.taskQueue.len == 0
+    if empty:
+      break
+    sleep(100)
+  server.close()
+
 proc close*(server: Server) {.raises: [], gcsafe.} =
   if server.socket.int != 0:
     server.trigger(server.shutdown)
@@ -1368,6 +1401,61 @@ proc newServer*(
 
 proc responded*(request: Request): bool =
   request.responded
+
+proc getCookie*(request: Request, name: string): string =
+  let cookieHeader = request.headers["Cookie"]
+  if cookieHeader.len == 0:
+    return ""
+  var i = 0
+  while i < cookieHeader.len:
+    var start = i
+    while i < cookieHeader.len and cookieHeader[i] == ' ':
+      inc i
+    start = i
+    while i < cookieHeader.len and cookieHeader[i] != ';':
+      inc i
+    var pairLen = i - start
+    while pairLen > 0 and cookieHeader[start + pairLen - 1] == ' ':
+      dec pairLen
+    if pairLen > name.len + 1 and cookieHeader[start ..< start + name.len] == name and
+       cookieHeader[start + name.len] == '=':
+      return cookieHeader[start + name.len + 1 ..< start + pairLen]
+    if i < cookieHeader.len and cookieHeader[i] == ';':
+      inc i
+  return ""
+
+proc setCookie*(
+  headers: var HttpHeaders,
+  name, value: string,
+  path: string = "",
+  maxAge: int = 0,
+  httpOnly: bool = false,
+  secure: bool = false,
+  sameSite: string = ""
+) =
+  var cookie = name & "=" & value
+  if path.len > 0:
+    cookie &= "; Path=" & path
+  if maxAge > 0:
+    cookie &= "; Max-Age=" & $maxAge
+  if httpOnly:
+    cookie &= "; HttpOnly"
+  if secure:
+    cookie &= "; Secure"
+  if sameSite.len > 0:
+    cookie &= "; SameSite=" & sameSite
+  headers.add(("Set-Cookie", cookie))
+
+proc setCookie*(
+  request: Request,
+  name, value: string,
+  path: string = "",
+  maxAge: int = 0,
+  httpOnly: bool = false,
+  secure: bool = false,
+  sameSite: string = ""
+) =
+  request.responseHeaders.setCookie(name, value, path, maxAge, httpOnly, secure, sameSite)
 
 proc waitUntilReady*(server: Server, timeout: float = 10) =
   let start = cpuTime()
