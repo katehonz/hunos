@@ -5,7 +5,7 @@
 ## Run:
 ##   nim c --threads:on --mm:orc --path:src -r tests/test_staticfiles.nim
 
-import hunos/staticfiles, std/os, std/tempfiles
+import hunos/staticfiles, hunos, hunos/router, hunos/middleware, std/os, std/tempfiles
 
 block: # Test MIME type detection
   assert guessContentType(".html") == "text/html; charset=utf-8"
@@ -85,5 +85,27 @@ block: # Test URL prefix stripping
   echo "[OK] Files outside prefix are not served"
 
   removeDir(tmpDir)
+
+block: # Test staticFileMiddleware compiles correctly
+  let tmpDir = getTempDir() / "hunos_test_middleware"
+  createDir(tmpDir)
+  writeFile(tmpDir / "test.css", "body{}")
+
+  let config = newStaticConfig(tmpDir, urlPrefix = "/static")
+
+  proc apiHandler(request: Request) {.gcsafe.} =
+    request.respond(200, body = "API response")
+
+  var r = newRouter()
+  r.get("/api", apiHandler)
+
+  var stack = newMiddlewareStack(r)
+  stack.use(staticFileMiddleware(config))
+
+  let handler = stack.toHandler()
+  assert handler != nil
+
+  removeDir(tmpDir)
+  echo "[OK] staticFileMiddleware compiles and chains correctly"
 
 echo "All staticfiles tests passed!"

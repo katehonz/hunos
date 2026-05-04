@@ -74,12 +74,16 @@ proc clientProc(args: ClientArgs) {.thread, gcsafe.} =
 
 proc runBenchmark(port: int, numWorkers: int): int64 =
   ## Starts server with given worker count, returns requests/sec.
+  echo "  Creating server..."
   let server = newServer(handler, workerThreads = numWorkers)
+  echo "  Server created"
 
   var serverThread: Thread[ServerArgs]
   createThread(serverThread, serveProc, ServerArgs(server: server, port: port))
+  echo "  Server thread started"
 
   server.waitUntilReady()
+  echo "  Server ready"
 
   totalRequests.store(0)
   totalErrors.store(0)
@@ -94,11 +98,16 @@ proc runBenchmark(port: int, numWorkers: int): int64 =
   for i in 0 ..< numClients:
     joinThread(clientThreads[i])
 
+  echo "  Client threads joined"
+
   let elapsed = epochTime() - benchStart
   let requestCount = totalRequests.load()
 
+  echo "  Closing server..."
   server.close()
+  echo "  Server closed, joining server thread..."
   joinThread(serverThread)
+  echo "  Server thread joined"
 
   result = int64(float64(requestCount) / elapsed)
 
@@ -114,7 +123,9 @@ proc main() =
 
   for workers in concurrencyLevels:
     let port = 8080 + workers
+    echo "Starting benchmark with ", workers, " workers on port ", port
     let rps = runBenchmark(port, workers)
+    echo "Completed benchmark with ", workers, " workers: ", rps, " req/s"
 
     if workers == 1:
       baseline = rps

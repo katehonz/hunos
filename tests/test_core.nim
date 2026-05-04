@@ -134,6 +134,17 @@ block: # Test Response object
 
   echo "All Response object tests passed!"
 
+block: # Test getHeader helper
+  var headers: HttpHeaders
+  headers.add(("Content-Type", "application/json"))
+  headers.add(("X-Custom-Header", ""))
+
+  assert headers["Content-Type"] == "application/json"
+  assert headers["X-Custom-Header"] == ""
+  assert headers["X-Missing"] == ""
+
+  echo "All getHeader helper tests passed!"
+
 block: # Test Cookie helpers
   var headers: HttpHeaders
   headers.setCookie("session", "abc123", path = "/", maxAge = 3600, httpOnly = true, secure = true, sameSite = "Lax")

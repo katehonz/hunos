@@ -91,6 +91,7 @@ type
     rand: Rand
     workerThreads: seq[Thread[Server]]
     serving: Atomic[bool]
+    serveComplete: Atomic[bool]
     destroyCalled: bool
     socket: SocketHandle
     selector: Selector[DataEntry]
@@ -1021,7 +1022,6 @@ proc destroy(server: Server, joinThreads: bool) {.raises: [].} =
       server.shutdown.close()
     except Exception:
       discard
-    `=destroy`(server[])
     deallocShared(server)
   else:
     discard
@@ -1128,7 +1128,6 @@ proc loopForever(server: Server) {.raises: [IOSelectorsException].} =
           server.log(DebugLevel, "Dropped message to disconnected client")
 
     if shutdownTriggered:
-      server.destroy(true)
       return
 
     for i in 0 ..< readyCount:
@@ -1285,6 +1284,11 @@ proc shutdown*(server: Server, timeout: int = 30) {.raises: [], gcsafe.} =
 proc close*(server: Server) {.raises: [], gcsafe.} =
   if server.socket.int != 0:
     server.trigger(server.shutdown)
+    while server.serving.load(moRelaxed):
+      sleep(10)
+    while not server.serveComplete.load(moRelaxed):
+      sleep(10)
+    server.destroy(true)
   else:
     server.destroy(true)
 
@@ -1332,13 +1336,14 @@ proc serve*(
     raise currentExceptionAsHunosError()
 
   server.serving.store(true, moRelaxed)
+  server.serveComplete.store(false, moRelaxed)
 
   try:
     server.loopForever()
   except Exception as e:
     server.log(ErrorLevel, e.msg & "\n" & e.getStackTrace())
-    server.destroy(false)
-    raise currentExceptionAsHunosError()
+  server.serving.store(false, moRelaxed)
+  server.serveComplete.store(true, moRelaxed)
 
 proc newServer*(
   handler: RequestHandler,
@@ -1402,6 +1407,11 @@ proc newServer*(
 
 proc responded*(request: Request): bool =
   request.responded
+
+proc getHeader*(request: Request, key: string, default = ""): string =
+  if request.headers.contains(key):
+    return request.headers[key]
+  return default
 
 proc getCookie*(request: Request, name: string): string =
   let cookieHeader = request.headers["Cookie"]

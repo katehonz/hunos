@@ -1,4 +1,4 @@
-import ../hunos, std/atomics, std/strutils, std/times
+import ../hunos, std/atomics, std/strutils, std/times, std/json, std/base64
 
 var requestIdCounter*: Atomic[uint64]
 
@@ -102,3 +102,55 @@ proc recoveryMiddleware*(
           var headers: HttpHeaders
           headers["Content-Type"] = "text/plain"
           request.respond(500, headers, "Internal Server Error")
+
+proc jsonBodyMiddleware*: MiddlewareProc =
+  return proc(request: Request, next: proc() {.gcsafe.}) {.gcsafe.} =
+    let ct = request.headers["Content-Type"]
+    if ct.startsWith("application/json") and request.body.len > 0:
+      try:
+        discard parseJson(request.body)
+      except JsonParsingError:
+        request.respond(400, body = "Invalid JSON")
+        return
+    next()
+
+proc getJsonBody*(request: Request): JsonNode =
+  if request.body.len > 0:
+    return parseJson(request.body)
+  else:
+    return newJObject()
+
+type
+  VerifyHandler* = proc(username, password: string): bool {.gcsafe.}
+
+proc basicAuthMiddleware*(
+  realm: string,
+  verifyHandler: VerifyHandler
+): MiddlewareProc =
+  return proc(request: Request, next: proc() {.gcsafe.}) {.gcsafe.} =
+    let authHeader = request.headers["Authorization"]
+    if authHeader.len == 0 or not authHeader.startsWith("Basic "):
+      var headers: HttpHeaders
+      headers["WWW-Authenticate"] = "Basic realm=\"" & realm & "\""
+      request.respond(401, headers, "Authentication required")
+      return
+
+    let encoded = authHeader[6 .. ^1]
+    let decoded = decode(encoded)
+    let colonPos = decoded.find(':')
+    if colonPos == -1:
+      var headers: HttpHeaders
+      headers["WWW-Authenticate"] = "Basic realm=\"" & realm & "\""
+      request.respond(401, headers, "Invalid credentials")
+      return
+
+    let username = decoded[0 ..< colonPos]
+    let password = decoded[colonPos + 1 .. ^1]
+
+    if not verifyHandler(username, password):
+      var headers: HttpHeaders
+      headers["WWW-Authenticate"] = "Basic realm=\"" & realm & "\""
+      request.respond(401, headers, "Invalid credentials")
+      return
+
+    next()

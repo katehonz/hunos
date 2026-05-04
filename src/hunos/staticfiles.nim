@@ -1,5 +1,5 @@
-import std/os, std/strutils, std/times, std/md5
-import ../hunos
+import std/os, std/strutils, std/times, checksums/md5
+import ../hunos, ../hunos/middleware
 
 type
   StaticConfig* = object
@@ -54,7 +54,7 @@ proc decodeUrlPath(path: string): string =
 proc generateETag*(filePath: string): string =
   try:
     let info = getFileInfo(filePath)
-    let tag = $getMD5($info.lastWriteTime & $info.size)
+    let tag = getMD5($info.lastWriteTime & $info.size)
     result = "\"" & tag & "\""
   except Exception:
     result = ""
@@ -199,3 +199,53 @@ proc serveStaticFile*(config: StaticConfig, request: Request) =
   else:
     headers["Content-Length"] = $fileSize
     request.respond(200, headers, entry.content)
+
+proc staticFileMiddleware*(config: StaticConfig): MiddlewareProc =
+  return proc(request: Request, next: proc() {.gcsafe.}) {.gcsafe.} =
+    let entry = serveFile(config, request.path)
+    if entry.filePath.len > 0:
+      let etag = generateETag(entry.filePath)
+      let ifNoneMatch = request.headers["If-None-Match"]
+      let ifModifiedSince = request.headers["If-Modified-Since"]
+
+      if ifNoneMatch.len > 0 and ifNoneMatch == etag:
+        var headers: HttpHeaders
+        headers["ETag"] = etag
+        request.respond(304, headers)
+        return
+
+      if ifModifiedSince.len > 0:
+        try:
+          let modTime = format(utc(fromUnixFloat(entry.lastModified)), "ddd, dd MMM yyyy HH:mm:ss 'GMT'")
+          if ifModifiedSince == modTime:
+            var headers: HttpHeaders
+            headers["Last-Modified"] = modTime
+            request.respond(304, headers)
+            return
+        except Exception:
+          discard
+
+      let fileSize = entry.content.len
+      var headers: HttpHeaders
+      headers["Content-Type"] = entry.contentType
+      headers["ETag"] = etag
+      try:
+        headers["Last-Modified"] = format(utc(fromUnixFloat(entry.lastModified)), "ddd, dd MMM yyyy HH:mm:ss 'GMT'")
+      except Exception:
+        discard
+      if config.maxAge > 0:
+        headers["Cache-Control"] = "max-age=" & $config.maxAge
+
+      let rangeHeader = request.headers["Range"]
+      var (hasRange, startByte, endByte) = parseRangeHeader(rangeHeader, fileSize)
+
+      if hasRange:
+        let rangeLen = endByte - startByte + 1
+        headers["Content-Range"] = "bytes " & $startByte & "-" & $endByte & "/" & $fileSize
+        headers["Content-Length"] = $rangeLen
+        request.respond(206, headers, entry.content[startByte .. endByte])
+      else:
+        headers["Content-Length"] = $fileSize
+        request.respond(200, headers, entry.content)
+    else:
+      next()

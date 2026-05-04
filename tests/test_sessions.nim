@@ -2,7 +2,7 @@
 ##
 ## Tests for session management.
 
-import hunos, hunos/sessions, hunos/middleware, std/os, std/strutils
+import hunos, hunos/sessions, hunos/middleware, std/os, std/strutils, std/tables
 import std/httpclient as httpclient
 from std/httpclient import newHttpClient, close
 
@@ -136,11 +136,161 @@ proc testSessionMiddleware() =
 
   echo "[OK] Session middleware integration works"
 
+proc testFlashMessages() =
+  echo "[TEST] Flash messages"
+
+  var store = newSessionStore(maxAge = 3600)
+  var sess = store.newSession()
+
+  sess.flash("Welcome!", flInfo)
+  sess.flash("Operation completed", flSuccess)
+  sess.flash("Be careful", flWarning)
+  sess.flash("Something went wrong", flError)
+
+  let msgs = sess.getFlashedMsgs()
+  assert msgs.len == 4, "Should have 4 flash messages, got: " & $msgs.len
+
+  assert msgs[0][0] == flInfo, "First should be info"
+  assert msgs[0][1] == "Welcome!"
+  assert msgs[1][0] == flSuccess, "Second should be success"
+  assert msgs[1][1] == "Operation completed"
+  assert msgs[2][0] == flWarning, "Third should be warning"
+  assert msgs[3][0] == flError, "Fourth should be error"
+
+  let msgs2 = sess.getFlashedMsgs()
+  assert msgs2.len == 0, "Flash messages should be cleared after reading, got: " & $msgs2.len
+
+  echo "[OK] Flash messages work correctly"
+
+proc testSignedCookieSession() =
+  echo "[TEST] Signed cookie encode/decode"
+
+  let secretKey = newSecretKey("my-secret-key-for-testing")
+
+  var data: Table[string, string]
+  data["user"] = "alice"
+  data["role"] = "admin"
+
+  let ts = 1714800000.0
+  let encoded = encodeSignedCookie(secretKey, data, ts)
+  assert encoded.len > 0, "Encoded cookie should not be empty"
+
+  let (decoded, timestamp) = decodeSignedCookie(secretKey, encoded)
+  assert decoded.len == 2, "Should have 2 fields, got: " & $decoded.len
+  assert decoded["user"] == "alice"
+  assert decoded["role"] == "admin"
+  assert timestamp == ts
+
+  echo "[OK] Signed cookie encode/decode works"
+
+  echo "[TEST] Signed cookie tamper detection"
+
+  let badKey = newSecretKey("different-key-for-testing")
+  let (badDecode, _) = decodeSignedCookie(badKey, encoded)
+  assert badDecode.len == 0, "Tampered cookie should fail decode"
+
+  echo "[OK] Tampered cookie rejected"
+
+  echo "[TEST] Signed cookie invalid format"
+
+  let (invalid, _) = decodeSignedCookie(secretKey, "not-a-valid-cookie")
+  assert invalid.len == 0, "Invalid format should return empty"
+
+  echo "[OK] Invalid format rejected"
+
+proc testSignedCookieMiddleware() =
+  echo "[TEST] Signed cookie middleware integration"
+
+  let secretKey = newSecretKey("integration-test-secret-key")
+
+  proc handler(request: Request) {.gcsafe.} =
+    let sess = request.getSession()
+    if sess == nil:
+      if not request.responded:
+        request.respond(500, body = "no session")
+      return
+
+    let counterStr = sess.get("counter")
+    var counter = 0
+    if counterStr.len > 0:
+      try:
+        counter = parseInt(counterStr)
+      except ValueError:
+        counter = 0
+    counter += 1
+    sess.set("counter", $counter)
+    sess.set("_response_body", $counter)
+
+  var stack = newMiddlewareStack(handler)
+  stack.use(signedCookieMiddleware(secretKey, maxAge = 3600))
+
+  let server = newServer(stack.toHandler(), workerThreads = 2)
+
+  var serverThread: Thread[ServerWithPort]
+  createThread(serverThread, serveProc, ServerWithPort(server: server, port: 8091))
+  server.waitUntilReady()
+
+  var client = newHttpClient(timeout = 5000)
+
+  let r1 = httpclient.get(client, "http://127.0.0.1:8091/")
+  let resp1 = r1.body
+  let cookieHeader = r1.headers.getOrDefault("Set-Cookie")
+  assert resp1 == "1", "First request should return 1, got: " & resp1
+
+  var sessionCookie = ""
+  if cookieHeader.len > 0:
+    let semiPos = cookieHeader.find(';')
+    if semiPos > 0:
+      sessionCookie = cookieHeader[0 ..< semiPos]
+    else:
+      sessionCookie = cookieHeader
+  assert sessionCookie.len > 0, "Should have session cookie"
+
+  # Second request with cookie from first response
+  client.headers["Cookie"] = sessionCookie
+  let r2 = httpclient.get(client, "http://127.0.0.1:8091/")
+  let resp2 = r2.body
+  assert resp2 == "2", "Second request should return 2, got: " & resp2
+
+  # Extract updated cookie from second response
+  let cookieHeader2 = r2.headers.getOrDefault("Set-Cookie")
+  if cookieHeader2.len > 0:
+    let semiPos = cookieHeader2.find(';')
+    if semiPos > 0:
+      sessionCookie = cookieHeader2[0 ..< semiPos]
+    else:
+      sessionCookie = cookieHeader2
+
+  # Third request with updated cookie
+  client.headers["Cookie"] = sessionCookie
+  let r3 = httpclient.get(client, "http://127.0.0.1:8091/")
+  let resp3 = r3.body
+  assert resp3 == "3", "Third request should return 3, got: " & resp3
+
+  echo "[OK] Signed cookie middleware works (counter: 1 → 2 → 3)"
+
+  echo "[TEST] Tampered cookie rejected by middleware"
+  client.headers["Cookie"] = sessionCookie & "tampered"
+  let r4 = httpclient.get(client, "http://127.0.0.1:8091/")
+  let resp4 = r4.body
+  assert resp4 == "1", "Tampered cookie should start fresh, got: " & resp4
+
+  echo "[OK] Tampered cookie restarts session"
+
+  client.close()
+  server.close()
+  joinThread(serverThread)
+
+  echo "[OK] Signed cookie middleware tests passed"
+
 proc main() =
   testBasicSession()
   testSessionExpiration()
   testSessionCleanup()
   testSessionMiddleware()
+  testFlashMessages()
+  testSignedCookieSession()
+  testSignedCookieMiddleware()
   echo ""
   echo "All session tests passed!"
 
