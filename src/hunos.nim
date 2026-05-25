@@ -388,7 +388,7 @@ proc respond*(
         body = compressed
         headers["Content-Encoding"] = encoding
 
-  if "Content-Length" notin headers:
+  if "Content-Length" notin headers or "Content-Encoding" in headers:
     let shouldAddContentLengthHeader =
       statusCode != 204 and (statusCode < 100 or statusCode >= 200)
     if shouldAddContentLengthHeader or body.len > 0:
@@ -1525,8 +1525,13 @@ proc loopForever(server: Server) {.raises: [IOSelectorsException].} =
           if bytesSent > 0:
             outgoingBuffer.bytesSent += bytesSent
             sentTo.add(readyKey.fd.SocketHandle)
-          else:
+          elif bytesSent == 0:
             needClosing.incl(readyKey.fd.SocketHandle)
+            continue
+          else:
+            let err = osLastError()
+            if err.int32 != EAGAIN:
+              needClosing.incl(readyKey.fd.SocketHandle)
             continue
 
     for clientSocket in receivedFrom:
