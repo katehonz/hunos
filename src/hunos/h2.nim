@@ -513,13 +513,13 @@ proc encodeHpackHeaders*(conn: var H2Connection, headers: seq[(string, string)])
       if nameMatch > 0:
         # Name is indexed, value is literal
         var encoded = encodeHpackInt(nameMatch.uint32, 6)
-        encoded[^1] = char(encoded[^1].uint8 or 0x40)
+        encoded[0] = char(encoded[0].uint8 or 0x40)
         encoded &= encodeHpackString(value, false)
         result &= encoded
       else:
         # Both name and value are literal
         var encoded = encodeHpackInt(0'u32, 6)
-        encoded[^1] = char(encoded[^1].uint8 or 0x40)
+        encoded[0] = char(encoded[0].uint8 or 0x40)
         encoded &= encodeHpackString(name, false)
         encoded &= encodeHpackString(value, false)
         result &= encoded
@@ -536,12 +536,12 @@ proc encodeHpackHeadersStandalone*(headers: seq[(string, string)]): string =
       let nameMatch = findNameInStaticTable(name)
       if nameMatch > 0:
         var encoded = encodeHpackInt(nameMatch.uint32, 6)
-        encoded[^1] = char(encoded[^1].uint8 or 0x40)
+        encoded[0] = char(encoded[0].uint8 or 0x40)
         encoded &= encodeHpackString(value, false)
         result &= encoded
       else:
         var encoded = encodeHpackInt(0'u32, 6)
-        encoded[^1] = char(encoded[^1].uint8 or 0x40)
+        encoded[0] = char(encoded[0].uint8 or 0x40)
         encoded &= encodeHpackString(name, false)
         encoded &= encodeHpackString(value, false)
         result &= encoded
@@ -587,7 +587,7 @@ proc closeStream*(conn: var H2Connection, streamId: uint32) =
 proc parseSettingsPayload*(payload: string): seq[(SettingsParam, uint32)] =
   result = @[]
   var i = 0
-  while i + 5 < payload.len:
+  while i + 5 <= payload.len:
     let id = (payload[i].uint16 shl 8) or payload[i + 1].uint16
     let value = (payload[i + 2].uint32 shl 24) or (payload[i + 3].uint32 shl 16) or
                 (payload[i + 4].uint32 shl 8) or payload[i + 5].uint32

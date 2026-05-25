@@ -15,7 +15,7 @@
 ##     let user = sess.get("user")
 ##     request.respond(200, body = "Hello " & user)
 
-import ../hunos, ../hunos/middleware, std/tables, std/locks, std/times, std/random, std/json, std/base64, std/strutils
+import ../hunos, ../hunos/middleware, std/tables, std/locks, std/times, std/random, std/json, std/base64, std/strutils, std/sysrand
 import checksums/sha2
 
 type
@@ -38,10 +38,13 @@ type
     maxAge*: int  # seconds
 
 proc generateSessionId(): string =
-  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+  var bytes = newSeq[byte](16)
+  getRandomBytes(bytes)
+  const hexChars = "0123456789abcdef"
   result = newString(32)
-  for i in 0 ..< 32:
-    result[i] = chars[rand(chars.len - 1)]
+  for i in 0 ..< 16:
+    result[i * 2]     = hexChars[(bytes[i] shr 4) and 0x0F]
+    result[i * 2 + 1] = hexChars[bytes[i] and 0x0F]
 
 proc newSessionStore*(maxAge: int = 86400): SessionStore =
   new(result)
@@ -216,10 +219,9 @@ proc newSecretKey*(key: string): SignedCookieSecretKey =
   result.key = key
 
 proc newRandomSecretKey*(): SignedCookieSecretKey =
-  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
-  result.key = newString(64)
-  for i in 0 ..< 64:
-    result.key[i] = chars[rand(chars.len - 1)]
+  var bytes = newSeq[byte](48)
+  getRandomBytes(bytes)
+  result.key = encode(bytes)
 
 proc hmacSha256(key, message: string): string =
   const blockSize = 64
