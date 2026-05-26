@@ -2,7 +2,7 @@
 
 [![Nim](https://img.shields.io/badge/Nim-2.0%2B-FFE953?logo=nim)](https://nim-lang.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](hunos.nimble)
+[![Version](https://img.shields.io/badge/version-1.3.1-blue.svg)](hunos.nimble)
 
 High-performance, multi-threaded HTTP/1.1, HTTP/2 and WebSocket server for Nim.
 

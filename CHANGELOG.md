@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-05-26
+
+### Fixed
+
+- **HPACK encoder index bug** — `encodeHpackHeaders` used `encoded[^1]` instead of `encoded[0]` for prefix bits, corrupting dynamic table indices > 63.
+- **HTTP/2 settings off-by-one** — `parseSettingsPayload` used `<` instead of `<=`, skipping the last setting when payload length was an exact multiple of 6.
+- **Insecure PRNG** — replaced `rand()` with OS CSPRNG via `getRandomBytes` for session IDs, CSRF tokens, and secret keys in `sessions.nim` and `csrf.nim`.
+- **EAGAIN in send()** — `send()` now retries on `EAGAIN` instead of treating it as a fatal error.
+- **Content-Length after gzip** — `Content-Length` header is now correctly updated after gzip compression.
+
+---
+
 ## [1.3.0] - 2026-05-16
 
 ### Added
@@ -85,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Core server loop with epoll (Linux) and select (cross-platform) backends.
 - Basic request/response cycle.
 
+[1.3.1]: https://github.com/katehonz/hunos/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/katehonz/hunos/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/katehonz/hunos/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/katehonz/hunos/compare/v1.0.0...v1.1.0
