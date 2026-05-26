@@ -23,11 +23,10 @@ const
   csrfTokenLength = 32
 
 proc generateCsrfToken*(): string =
-  var bytes = newSeq[byte](csrfTokenLength)
-  getRandomBytes(bytes)
+  let bytes = urandom(16)
   const hexChars = "0123456789abcdef"
-  result = newString(csrfTokenLength * 2)
-  for i in 0 ..< csrfTokenLength:
+  result = newString(32)
+  for i in 0 ..< 16:
     result[i * 2]     = hexChars[(bytes[i] shr 4) and 0x0F]
     result[i * 2 + 1] = hexChars[bytes[i] and 0x0F]
 

@@ -67,3 +67,5 @@ tests/wrk_hunos
 tests/wrk_asynchttpserver
 tests/nil_repro/
 examples/nimmax_hunos
+src/hunos/csrf
+src/hunos/sessions

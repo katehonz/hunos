@@ -38,8 +38,7 @@ type
     maxAge*: int  # seconds
 
 proc generateSessionId(): string =
-  var bytes = newSeq[byte](16)
-  getRandomBytes(bytes)
+  let bytes = urandom(16)
   const hexChars = "0123456789abcdef"
   result = newString(32)
   for i in 0 ..< 16:
@@ -219,8 +218,7 @@ proc newSecretKey*(key: string): SignedCookieSecretKey =
   result.key = key
 
 proc newRandomSecretKey*(): SignedCookieSecretKey =
-  var bytes = newSeq[byte](48)
-  getRandomBytes(bytes)
+  let bytes = urandom(48)
   result.key = encode(bytes)
 
 proc hmacSha256(key, message: string): string =
