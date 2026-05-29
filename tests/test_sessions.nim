@@ -98,13 +98,13 @@ proc testSessionMiddleware() =
   let server = newServer(stack.toHandler(), workerThreads = 2)
 
   var serverThread: Thread[ServerWithPort]
-  createThread(serverThread, serveProc, ServerWithPort(server: server, port: 8090))
+  createThread(serverThread, serveProc, ServerWithPort(server: server, port: 18090))
   server.waitUntilReady()
 
   var client = newHttpClient(timeout = 5000)
 
   # First request — should set cookie
-  let r1 = httpclient.get(client, "http://127.0.0.1:8090/")
+  let r1 = httpclient.get(client, "http://127.0.0.1:18090/")
   let resp1 = r1.body
   let cookieHeader = r1.headers.getOrDefault("Set-Cookie")
   assert resp1 == "1", "First request should return 1, got: " & resp1
@@ -120,13 +120,13 @@ proc testSessionMiddleware() =
 
   # Second request — send cookie manually
   client.headers["Cookie"] = sessionCookie
-  let r2 = httpclient.get(client, "http://127.0.0.1:8090/")
+  let r2 = httpclient.get(client, "http://127.0.0.1:18090/")
   let resp2 = r2.body
   assert resp2 == "2", "Second request should return 2, got: " & resp2
 
   # Third request
   client.headers["Cookie"] = sessionCookie
-  let r3 = httpclient.get(client, "http://127.0.0.1:8090/")
+  let r3 = httpclient.get(client, "http://127.0.0.1:18090/")
   let resp3 = r3.body
   assert resp3 == "3", "Third request should return 3, got: " & resp3
 
@@ -227,12 +227,12 @@ proc testSignedCookieMiddleware() =
   let server = newServer(stack.toHandler(), workerThreads = 2)
 
   var serverThread: Thread[ServerWithPort]
-  createThread(serverThread, serveProc, ServerWithPort(server: server, port: 8091))
+  createThread(serverThread, serveProc, ServerWithPort(server: server, port: 18091))
   server.waitUntilReady()
 
   var client = newHttpClient(timeout = 5000)
 
-  let r1 = httpclient.get(client, "http://127.0.0.1:8091/")
+  let r1 = httpclient.get(client, "http://127.0.0.1:18091/")
   let resp1 = r1.body
   let cookieHeader = r1.headers.getOrDefault("Set-Cookie")
   assert resp1 == "1", "First request should return 1, got: " & resp1
@@ -248,7 +248,7 @@ proc testSignedCookieMiddleware() =
 
   # Second request with cookie from first response
   client.headers["Cookie"] = sessionCookie
-  let r2 = httpclient.get(client, "http://127.0.0.1:8091/")
+  let r2 = httpclient.get(client, "http://127.0.0.1:18091/")
   let resp2 = r2.body
   assert resp2 == "2", "Second request should return 2, got: " & resp2
 
@@ -263,7 +263,7 @@ proc testSignedCookieMiddleware() =
 
   # Third request with updated cookie
   client.headers["Cookie"] = sessionCookie
-  let r3 = httpclient.get(client, "http://127.0.0.1:8091/")
+  let r3 = httpclient.get(client, "http://127.0.0.1:18091/")
   let resp3 = r3.body
   assert resp3 == "3", "Third request should return 3, got: " & resp3
 
@@ -271,7 +271,7 @@ proc testSignedCookieMiddleware() =
 
   echo "[TEST] Tampered cookie rejected by middleware"
   client.headers["Cookie"] = sessionCookie & "tampered"
-  let r4 = httpclient.get(client, "http://127.0.0.1:8091/")
+  let r4 = httpclient.get(client, "http://127.0.0.1:18091/")
   let resp4 = r4.body
   assert resp4 == "1", "Tampered cookie should start fresh, got: " & resp4
 

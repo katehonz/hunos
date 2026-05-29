@@ -16,17 +16,17 @@
 ##     let html = "<form><input type=\"hidden\" name=\"csrf_token\" value=\"" & token & "\"></form>"
 ##     request.respond(200, body = html)
 
-import ../hunos, ../hunos/middleware, ../hunos/sessions, std/strutils, std/random, std/sets, std/sysrand
+import ../hunos, ../hunos/middleware, ../hunos/sessions, std/strutils, std/sets, std/sysrand
 
 const
   csrfTokenKey = "_csrf_token"
   csrfTokenLength = 32
 
 proc generateCsrfToken*(): string =
-  let bytes = urandom(16)
+  let bytes = urandom(csrfTokenLength div 2)
   const hexChars = "0123456789abcdef"
-  result = newString(32)
-  for i in 0 ..< 16:
+  result = newString(csrfTokenLength)
+  for i in 0 ..< bytes.len:
     result[i * 2]     = hexChars[(bytes[i] shr 4) and 0x0F]
     result[i * 2 + 1] = hexChars[bytes[i] and 0x0F]
 

@@ -15,7 +15,7 @@
 ##     let user = sess.get("user")
 ##     request.respond(200, body = "Hello " & user)
 
-import ../hunos, ../hunos/middleware, std/tables, std/locks, std/times, std/random, std/json, std/base64, std/strutils, std/sysrand
+import ../hunos, ../hunos/middleware, std/tables, std/locks, std/times, std/json, std/base64, std/strutils, std/sysrand
 import checksums/sha2
 
 type
