@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.3] - 2026-05-29
+
+### Fixed
+
+- **Nim 2.2.x `std/sysrand` compatibility** — removed unused `std/random` imports from `sessions.nim` and `csrf.nim`; `generateCsrfToken()` now uses `csrfTokenLength` constant instead of hardcoded values.
+- **Test suite port conflicts** — changed `test_sessions.nim` to use ephemeral ports (18090/18091) to avoid collisions with local services.
+
+---
+
 ## [1.3.1] - 2026-05-26
 
 ### Fixed
