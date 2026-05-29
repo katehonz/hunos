@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.2] - 2026-05-28
+
+### Fixed
+
+- **Nim 2.2.x build failure** — replaced removed `getRandomBytes` with `urandom` from `std/sysrand` in `sessions.nim` and `csrf.nim` (3 call sites).
+
+---
+
 ## [1.3.1] - 2026-05-26
 
 ### Fixed
@@ -106,6 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Core server loop with epoll (Linux) and select (cross-platform) backends.
 - Basic request/response cycle.
 
+[1.3.3]: https://github.com/katehonz/hunos/compare/v1.3.2...v1.3.3
+[1.3.2]: https://github.com/katehonz/hunos/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/katehonz/hunos/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/katehonz/hunos/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/katehonz/hunos/compare/v1.1.0...v1.2.0
