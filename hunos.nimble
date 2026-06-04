@@ -1,4 +1,4 @@
-version     = "1.3.3"
+version     = "1.3.4"
 author      = "Hunos Project"
 description = "High-performance multi-threaded HTTP 1.1 and WebSocket server for Nim"
 license     = "MIT"
