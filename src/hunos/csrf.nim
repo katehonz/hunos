@@ -23,7 +23,10 @@ const
   csrfTokenLength = 32
 
 proc generateCsrfToken*(): string =
-  let bytes = urandom(csrfTokenLength div 2)
+  let n = csrfTokenLength div 2
+  let bytes = urandom(n)
+  if bytes.len != n:
+    raise newException(OSError, "Failed to read secure random bytes for CSRF token")
   const hexChars = "0123456789abcdef"
   result = newString(csrfTokenLength)
   for i in 0 ..< bytes.len:
@@ -91,7 +94,7 @@ proc csrfMiddleware*(
       request.respond(403, body = "CSRF token missing from request")
       return
 
-    if providedToken != expectedToken:
+    if not secureEquals(providedToken, expectedToken):
       request.respond(403, body = "CSRF token mismatch")
       return
 

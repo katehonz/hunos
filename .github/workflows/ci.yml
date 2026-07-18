@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Tests (Nim ${{ matrix.nim }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pin versions that downstream (NimMax / NimForum) actually use.
+        # Catching stdlib API removals here prevents another 1.3.1→1.3.2 fire-drill.
+        nim: ["2.0.8", "2.2.10"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ matrix.nim }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: nimble install -y
+
+      - name: Compile library (threads + ORC)
+        run: nim c --threads:on --mm:orc --path:src src/hunos.nim
+
+      - name: Compile security-sensitive modules
+        run: |
+          nim c --threads:on --mm:orc --path:src src/hunos/sessions.nim
+          nim c --threads:on --mm:orc --path:src src/hunos/csrf.nim
+          nim c --threads:on --mm:orc --path:src src/hunos/h2.nim
+
+      - name: Run tests
+        run: nimble test
+
+      - name: Guard against removed stdlib APIs
+        # Fails the build if anyone reintroduces getRandomBytes / insecure rand()
+        # for session IDs, CSRF tokens, or secret keys.
+        run: |
+          set -euo pipefail
+          if rg -n 'getRandomBytes' src/; then
+            echo "::error::getRandomBytes is not available on Nim 2.2.x — use urandom from std/sysrand"
+            exit 1
+          fi
+          if rg -n '\brand\(' src/hunos/sessions.nim src/hunos/csrf.nim; then
+            echo "::error::Do not use insecure rand() for secrets — use urandom"
+            exit 1
+          fi
+          echo "API guards passed"

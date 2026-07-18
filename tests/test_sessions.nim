@@ -175,26 +175,40 @@ proc testSignedCookieSession() =
   let encoded = encodeSignedCookie(secretKey, data, ts)
   assert encoded.len > 0, "Encoded cookie should not be empty"
 
-  let (decoded, timestamp) = decodeSignedCookie(secretKey, encoded)
-  assert decoded.len == 2, "Should have 2 fields, got: " & $decoded.len
-  assert decoded["user"] == "alice"
-  assert decoded["role"] == "admin"
-  assert timestamp == ts
+  let decoded = decodeSignedCookie(secretKey, encoded)
+  assert decoded.ok, "Valid cookie should decode successfully"
+  assert decoded.data.len == 2, "Should have 2 fields, got: " & $decoded.data.len
+  assert decoded.data["user"] == "alice"
+  assert decoded.data["role"] == "admin"
+  assert decoded.timestamp == ts
 
   echo "[OK] Signed cookie encode/decode works"
+
+  echo "[TEST] Signed cookie empty data is valid"
+
+  var emptyData: Table[string, string]
+  let emptyEncoded = encodeSignedCookie(secretKey, emptyData, ts)
+  let emptyDecoded = decodeSignedCookie(secretKey, emptyEncoded)
+  assert emptyDecoded.ok, "Empty session data with valid signature must be accepted"
+  assert emptyDecoded.data.len == 0
+  assert emptyDecoded.timestamp == ts
+
+  echo "[OK] Empty signed cookie accepted"
 
   echo "[TEST] Signed cookie tamper detection"
 
   let badKey = newSecretKey("different-key-for-testing")
-  let (badDecode, _) = decodeSignedCookie(badKey, encoded)
-  assert badDecode.len == 0, "Tampered cookie should fail decode"
+  let badDecode = decodeSignedCookie(badKey, encoded)
+  assert not badDecode.ok, "Tampered cookie should fail decode"
+  assert badDecode.data.len == 0, "Failed decode should yield empty data"
 
   echo "[OK] Tampered cookie rejected"
 
   echo "[TEST] Signed cookie invalid format"
 
-  let (invalid, _) = decodeSignedCookie(secretKey, "not-a-valid-cookie")
-  assert invalid.len == 0, "Invalid format should return empty"
+  let invalid = decodeSignedCookie(secretKey, "not-a-valid-cookie")
+  assert not invalid.ok, "Invalid format should not be ok"
+  assert invalid.data.len == 0, "Invalid format should return empty"
 
   echo "[OK] Invalid format rejected"
 

@@ -39,6 +39,8 @@ type
 
 proc generateSessionId(): string =
   let bytes = urandom(16)
+  if bytes.len != 16:
+    raise newException(OSError, "Failed to read 16 secure random bytes for session id")
   const hexChars = "0123456789abcdef"
   result = newString(32)
   for i in 0 ..< 16:
@@ -219,32 +221,57 @@ proc newSecretKey*(key: string): SignedCookieSecretKey =
 
 proc newRandomSecretKey*(): SignedCookieSecretKey =
   let bytes = urandom(48)
+  if bytes.len != 48:
+    raise newException(OSError, "Failed to read 48 secure random bytes for secret key")
   result.key = encode(bytes)
 
+proc digestBytes(d: ShaDigest_256): string =
+  ## Convert a SHA-256 digest array to a raw 32-byte string (not hex).
+  result = newString(d.len)
+  for i in 0 ..< d.len:
+    result[i] = d[i]
+
 proc hmacSha256(key, message: string): string =
+  ## RFC 2104 HMAC-SHA256. Returns the raw 32-byte digest (not hex).
+  ##
+  ## Previous versions incorrectly used `$digest` (hex string) as intermediate
+  ## and final MAC material, producing a non-standard, weaker construction.
   const blockSize = 64
-  var blockKey = if key.len > blockSize:
+  var blockKey: string
+  if key.len > blockSize:
     var hasher = initSha_256()
     hasher.update(key)
-    $hasher.digest()
+    blockKey = digestBytes(hasher.digest())
   else:
-    key
+    blockKey = key
 
   var ipad = newString(blockSize)
   var opad = newString(blockSize)
   for i in 0 ..< blockSize:
-    ipad[i] = if i < blockKey.len: chr(ord(blockKey[i]) xor 0x36) else: chr(0x36)
-    opad[i] = if i < blockKey.len: chr(ord(blockKey[i]) xor 0x5C) else: chr(0x5C)
+    let b = if i < blockKey.len: ord(blockKey[i]) else: 0
+    ipad[i] = chr(b xor 0x36)
+    opad[i] = chr(b xor 0x5C)
 
   var inner = initSha_256()
   inner.update(ipad)
   inner.update(message)
-  let innerHash = $inner.digest()
+  let innerHash = digestBytes(inner.digest())
 
   var outer = initSha_256()
   outer.update(opad)
   outer.update(innerHash)
-  result = $outer.digest()
+  result = digestBytes(outer.digest())
+
+proc secureEquals*(a, b: string): bool =
+  ## Constant-time equality check for MAC/signature/token verification.
+  ## Always scans the full length of both strings when lengths match so
+  ## comparison time does not leak how many leading bytes agreed.
+  if a.len != b.len:
+    return false
+  var diff = 0
+  for i in 0 ..< a.len:
+    diff = diff or (ord(a[i]) xor ord(b[i]))
+  result = diff == 0
 
 proc base64urlEncode(data: string): string =
   result = encode(data).replace("+", "-").replace("/", "_").replace("=", "")
@@ -261,7 +288,16 @@ proc encodeSignedCookie*(secretKey: SignedCookieSecretKey, data: Table[string, s
   let signature = hmacSha256(secretKey.key, payload)
   result = base64urlEncode(jsonData) & "." & base64urlEncode($timestamp) & "." & base64urlEncode(signature)
 
-proc decodeSignedCookie*(secretKey: SignedCookieSecretKey, cookieValue: string): (Table[string, string], float64) =
+proc decodeSignedCookie*(secretKey: SignedCookieSecretKey, cookieValue: string):
+    tuple[ok: bool, data: Table[string, string], timestamp: float64] =
+  ## Decode and verify a signed session cookie.
+  ##
+  ## Returns `ok = false` on any parse/signature failure. Empty session data
+  ## is valid when `ok = true` (previous versions treated empty data as failure).
+  result.ok = false
+  result.data = initTable[string, string]()
+  result.timestamp = 0.0
+
   let parts = cookieValue.split('.')
   if parts.len != 3:
     return
@@ -273,7 +309,7 @@ proc decodeSignedCookie*(secretKey: SignedCookieSecretKey, cookieValue: string):
 
     let payload = jsonData & "." & $timestamp
     let expectedSig = hmacSha256(secretKey.key, payload)
-    if signature != expectedSig:
+    if not secureEquals(signature, expectedSig):
       return
 
     let parsed = parseJson(jsonData)
@@ -287,7 +323,7 @@ proc decodeSignedCookie*(secretKey: SignedCookieSecretKey, cookieValue: string):
       else:
         data[key] = $val
 
-    result = (data, timestamp)
+    result = (true, data, timestamp)
   except CatchableError:
     discard
 
@@ -310,11 +346,15 @@ proc signedCookieMiddleware*(
 
     let cookieValue = getCookieValue(request, cookieName)
     if cookieValue.len > 0:
-      let (data, timestamp) = decodeSignedCookie(secretKey, cookieValue)
-      if data.len > 0:
-        session.data = data
-        session.createdAt = timestamp
-        session.id = "signed:" & $timestamp
+      let decoded = decodeSignedCookie(secretKey, cookieValue)
+      # Verify signature AND server-side maxAge. Relying only on the cookie
+      # Max-Age attribute is insufficient — a client can resend an expired cookie.
+      let ageOk = maxAge <= 0 or (epochTime() - decoded.timestamp) <= float(maxAge)
+      if decoded.ok and ageOk:
+        # Accept empty tables — a valid signed cookie may have no keys yet.
+        session.data = decoded.data
+        session.createdAt = decoded.timestamp
+        session.id = "signed:" & $decoded.timestamp
 
     request.userData = cast[pointer](session)
 

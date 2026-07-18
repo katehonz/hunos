@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.4] - 2026-07-18
+
+### Fixed
+
+- **Broken HMAC-SHA256 for signed cookies** — `hmacSha256` used `$digest` (hex string) instead of the raw 32-byte digest for key compression, the inner hash, and the final MAC. Signatures are now RFC 2104-compliant. Existing signed cookies issued by ≤1.3.3 will not verify under 1.3.4 (sessions restart cleanly).
+- **Empty signed-cookie sessions rejected** — `decodeSignedCookie` previously treated empty data tables as failure; valid empty sessions are now accepted via an explicit `ok` flag.
+- **Signed-cookie maxAge only enforced by browser** — middleware now rejects expired cookies server-side even if the client resends them.
+- **Timing side-channel on token compare** — CSRF and signed-cookie verification use constant-time `secureEquals`.
+- **Silent CSPRNG short reads** — session IDs, CSRF tokens, and secret keys now fail hard if `urandom` returns fewer bytes than requested.
+
+### Changed
+
+- **`decodeSignedCookie` return type** — now `tuple[ok: bool, data: Table[string, string], timestamp: float64]` so callers can distinguish “valid empty session” from “invalid cookie”.
+
+### Added
+
+- **GitHub Actions CI** — runs the full test suite on Nim 2.0.8 and 2.2.10, compiles security-sensitive modules, and guards against reintroducing removed/insecure APIs (`getRandomBytes`, `rand()` for secrets).
+- **Explicit `nimble test` task** — single entry point for local and CI runs.
+
+---
+
 ## [1.3.3] - 2026-05-29
 
 ### Fixed
@@ -114,6 +135,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Core server loop with epoll (Linux) and select (cross-platform) backends.
 - Basic request/response cycle.
 
+[1.3.4]: https://github.com/katehonz/hunos/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/katehonz/hunos/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/katehonz/hunos/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/katehonz/hunos/compare/v1.3.0...v1.3.1

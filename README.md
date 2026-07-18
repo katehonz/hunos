@@ -2,13 +2,20 @@
 
 [![Nim](https://img.shields.io/badge/Nim-2.0%2B-FFE953?logo=nim)](https://nim-lang.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.3.3-blue.svg)](hunos.nimble)
+[![Version](https://img.shields.io/badge/version-1.3.4-blue.svg)](hunos.nimble)
+[![CI](https://github.com/katehonz/hunos/actions/workflows/ci.yml/badge.svg)](https://github.com/katehonz/hunos/actions/workflows/ci.yml)
 
 High-performance, multi-threaded HTTP/1.1, HTTP/2 and WebSocket server for Nim.
 
 Hunos is a **standalone HTTP server library** — use it directly for APIs, microservices, or real-time applications, or as the high-performance backend for frameworks like [NimMax](https://github.com/katehonz/nimmax). It is built on the proven single-IO-thread + worker-pool architecture, with significant improvements over [Mummy](https://github.com/guzba/mummy) in routing performance, developer ergonomics, and built-in features.
 
 ---
+
+### What's New in v1.3.4
+
+- **Correct HMAC-SHA256** for signed cookies (RFC 2104 raw digest, not hex)
+- **Server-side maxAge** enforcement + constant-time token compares
+- **CI on Nim 2.0.8 and 2.2.10** — stops “works on my Nim” regressions before release
 
 ### What's New in v1.3.3
 

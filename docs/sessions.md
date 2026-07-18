@@ -33,18 +33,20 @@ Flash levels: `flInfo`, `flWarning`, `flError`, `flSuccess`.
 
 ## Signed Cookie Backend
 
-Sessions stored in cryptographically signed cookies (HMAC-SHA256):
+Sessions stored in cryptographically signed cookies (HMAC-SHA256, RFC 2104):
 
 ```nim
 let secret = newSecretKey("my-secret")
-let signedStore = newSessionStore()
-stack.use(signedCookieMiddleware(secret, signedStore))
+# or: let secret = newRandomSecretKey()
+stack.use(signedCookieMiddleware(secret, maxAge = 3600))
 ```
 
-- Signature verified on every request
+- Signature verified on every request with constant-time compare
 - Tampered cookies are rejected → new session created
-- Timestamp-based expiration
-- Survives server restarts
+- **Server-side** maxAge enforcement (not only browser `Max-Age`)
+- Survives server restarts (no server-side store needed)
+
+> **Note (v1.3.4):** cookies issued by ≤1.3.3 used a non-standard hex HMAC and will not verify after upgrade; clients simply get a fresh session.
 
 ## SessionStore API
 
